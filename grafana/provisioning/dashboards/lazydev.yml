@@ -1,0 +1,16 @@
+# Tell Grafana where to find auto-provisioned dashboards.
+# Grafana reads this file from /etc/grafana/provisioning/dashboards/ and
+# loads every JSON dashboard from the specified path on startup.
+apiVersion: 1
+
+providers:
+  - name: 'LazyDev'
+    orgId: 1
+    folder: 'LazyDev'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      # Mounted from ./grafana/dashboards/ in docker-compose.yml
+      path: /var/lib/grafana/dashboards

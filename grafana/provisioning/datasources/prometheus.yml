@@ -1,0 +1,18 @@
+# Auto-provision Prometheus as Grafana's datasource on startup.
+# Grafana reads this file from /etc/grafana/provisioning/datasources/ and
+# creates the datasource without any manual UI clicks.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Pin the UID to "prometheus" so it matches the dashboard JSON's
+    # datasource references. Without this, Grafana auto-generates a random
+    # UID (e.g. "PBFA97CFB590B2093") and every panel shows "No data"
+    # because the dashboard can't resolve the datasource.
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    # Inside the Docker network, Prometheus is reachable at http://prometheus:9090
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

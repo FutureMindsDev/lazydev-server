@@ -1,0 +1,298 @@
+services:
+  app:
+    build: .
+    container_name: lazydev-app
+    # Run as root so the SandboxAgent can access /var/run/docker.sock.
+    # The Docker socket is owned by root on the host; the 'node' user cannot connect to it.
+    user: root
+    ports:
+      - "3200:3200"   # Main REST API + GitHub webhooks + MCP
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres
+      - REDIS_HOST=redis
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - LAZYDEV_CONTAINER_NAME=lazydev-app
+      - WORKTREE_BASE_PATH=/app/worktrees
+      # MCP Server (Hermes / OpenClaw):
+      #  Served on port 3200 at /mcp (shared with the public API).
+      #  Set MCP_AUTH_TOKEN in .env so clients must send
+      #  `Authorization: Bearer <token>`.
+      # ── Per-agent provider + model overrides (optional) ──────────────────
+      # All fall back to OPENAI_API_KEY / OPENAI_BASE_URL / LLM_MODEL (set in
+      # .env). Uncomment to use a different provider (its own *_API_KEY +
+      # *_BASE_URL) and/or model for a specific agent. Each field is
+      # independent — unset fields inherit the shared default. See
+      # .env.example §2b for full examples.
+      # - PLANNER_MODEL=
+      # - PLANNER_API_KEY=
+      # - PLANNER_BASE_URL=
+      # - PATCH_GENERATOR_MODEL=
+      # - PATCH_GENERATOR_API_KEY=
+      # - PATCH_GENERATOR_BASE_URL=
+      # - VALIDATION_MODEL=
+      # - VALIDATION_API_KEY=
+      # - VALIDATION_BASE_URL=
+      # - GIT_MODEL=
+      # - GIT_API_KEY=
+      # - GIT_BASE_URL=
+      # - ONBOARDING_MODEL=
+      # - ONBOARDING_API_KEY=
+      # - ONBOARDING_BASE_URL=
+      # ── Embedding model presets (optional) ───────────────────────────────
+      # EMBEDDING_PROVIDER and EMBEDDING_MODEL are read from .env by env_file
+      # below. Common presets to set in .env:
+      #   Google : EMBEDDING_PROVIDER=google  EMBEDDING_MODEL=gemini-embedding-2
+      #   OpenAI : EMBEDDING_PROVIDER=openai  EMBEDDING_MODEL=text-embedding-3-small
+      #   Ollama : EMBEDDING_PROVIDER=ollama  EMBEDDING_MODEL=nomic-embed-text
+      # ── Grafana embed config (GET /api/dashboard/grafana) ─────────────────
+      # Tells the frontend's GrafanaPanel where Grafana lives and which
+      # dashboards to embed. The baseUrl must be reachable from the browser
+      # (host port 3100), not the Docker network. Override in .env if needed.
+      - GRAFANA_BASE_URL=http://localhost:3100
+      - GRAFANA_DASHBOARDS=[{"uid":"lazydev-overview","title":"Backend Overview","embedUrl":"http://localhost:3100/d-solo/lazydev-overview/backend-overview?panelId=1&from=now-1h&to=now&theme=dark&kiosk=tv","description":"Memory, event loop, and GC metrics"}]
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      # Mount the Docker socket so the SandboxAgent can spin up sibling containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Named volume for worktrees — shared with sibling sandbox containers via
+      # --volumes-from lazydev-app. Works cross-platform (Mac + Linux) because
+      # Docker manages named volumes; /tmp is ephemeral and NOT shared by --volumes-from.
+      - worktrees:/app/worktrees
+      # Named volume for the persistent repo-cache clones. Must be shared with
+      # the serena container: OnboardingAgent/PlannerAgent/ValidationAgent/
+      # GitAgent all activate_project(repoPath) against Serena for durable,
+      # cross-job memories — without this mount, that path only exists inside
+      # the app container and Serena fails with "Project ... not found".
+      - repo-cache:/app/repo-cache
+    networks:
+      - lazydev-network
+
+  serena:
+    build:
+      context: .
+      dockerfile: Dockerfile.serena
+    container_name: lazydev-serena
+    ports:
+      - "3333:3333"
+    volumes:
+      - worktrees:/app/worktrees
+      - repo-cache:/app/repo-cache
+    networks:
+      - lazydev-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: lazydev-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: lazy_issue_resolver
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lazydev-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: lazydev-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    networks:
+      - lazydev-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: lazydev-qdrant
+    ports:
+      - '6333:6333'
+      - '6334:6334'
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - lazydev-network
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Optional admin UIs — uncomment if you want a GUI for inspecting Postgres /
+  # Redis while developing. Not required for the app to run.
+  # ───────────────────────────────────────────────────────────────────────────
+  # pgadmin:
+  #   image: dpage/pgadmin4
+  #   container_name: lazydev-pgadmin
+  #   environment:
+  #     PGADMIN_DEFAULT_EMAIL: admin@lazydev.com
+  #     PGADMIN_DEFAULT_PASSWORD: admin
+  #   ports:
+  #     - '5050:80'
+  #   depends_on:
+  #     - postgres
+  #   networks:
+  #     - lazydev-network
+  #
+  # redisinsight:
+  #   image: redis/redisinsight:latest
+  #   container_name: lazydev-redisinsight
+  #   ports:
+  #     - '8001:5540'
+  #   depends_on:
+  #     - redis
+  #   networks:
+  #     - lazydev-network
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Observability — Prometheus + Grafana
+  #
+  # Prometheus scrapes the app's /metrics endpoint (exposed via
+  # @willsoto/nestjs-prometheus) every 15s. Grafana queries Prometheus and
+  # serves dashboards on http://localhost:3100.
+  #
+  # Both are auto-provisioned on first boot:
+  #   - Prometheus: scrape config in ./prometheus.yml (targets app:3200/metrics)
+  #   - Grafana:    datasource + dashboard from ./grafana/provisioning/
+  #
+  # The app's /api/dashboard/grafana endpoint returns GRAFANA_BASE_URL +
+  # GRAFANA_DASHBOARDS (set in the app's environment below) so the frontend's
+  # GrafanaPanel can embed dashboards via iframe.
+  #
+  # Grafana credentials: admin / admin (change via GF_SECURITY_ADMIN_PASSWORD).
+  # ───────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lazydev-prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - prometheus-data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - lazydev-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lazydev-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Allow iframe embedding so the frontend's GrafanaPanel can render
+      # dashboards inline. Without this, Grafana sends X-Frame-Options:
+      # DENY and the browser blocks the iframe.
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    ports:
+      - '3100:3000'
+    volumes:
+      - grafana-data:/var/lib/grafana
+      # Auto-provision Prometheus datasource + dashboards on startup
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - lazydev-network
+    restart: unless-stopped
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Webhook tunnel — OPTIONAL.
+  #
+  # GitHub needs a PUBLIC URL to deliver webhooks. If you do not have a public
+  # IP / reverse proxy, uncomment ONE of the two tunnels below so the GitHub
+  # App's webhook can point at a tunnel URL instead of installing ngrok /
+  # tailscale on your host. The tunnel forwards to the `app` service on 3200.
+  #
+  # After the tunnel starts, copy the public URL it prints and set it as the
+  # GitHub App's Webhook URL (https://github.com/apps/lazydev-issue-resolver →
+  # General settings → Webhook URL), e.g.
+  #   ngrok    → https://<random>.ngrok-free.app/webhooks/github
+  #   tailscale→ https://<machine>.<tailnet>.ts.net/webhooks/github  (Funnel)
+  # ───────────────────────────────────────────────────────────────────────────
+
+  # ── Option 1: ngrok ─────────────────────────────────────────────────────────
+  # Sign up at https://ngrok.com, get an authtoken, and put it in .env as
+  # NGROK_AUTHTOKEN. Free tier is sufficient for webhooks.
+  #
+  # Enabled via the `tunnel` profile so `docker compose up` stays clean when
+  # you don't need a public URL. Set NGROK_AUTHTOKEN in .env, then start with:
+  #   docker compose --profile tunnel up
+  # The public URL is printed in `docker compose logs ngrok`.
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: lazydev-ngrok
+    profiles: ['tunnel']
+    # The ngrok image's default entrypoint is `ngrok` and its shell lives at
+    # /usr/bin/sh (not /bin/sh), so we override the entrypoint to /usr/bin/sh
+    # to allow shell conditional logic for the optional --domain flag.
+    entrypoint: ["/usr/bin/sh", "-c"]
+    # Forward the public ngrok URL to the app service on the internal network.
+    # --log=stdout surfaces the public URL in `docker compose logs ngrok`.
+    # --domain is optional: set NGROK_DOMAIN in .env for a stable URL
+    # (free tier gives a random one each start; a reserved domain needs a paid plan).
+    command:
+      - |
+        ngrok http app:3200 --log=stdout ${NGROK_DOMAIN:+--domain=$$NGROK_DOMAIN}
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - '4040:4040'   # local inspection dashboard (http://localhost:4040)
+    depends_on:
+      - app
+    networks:
+      - lazydev-network
+
+  # ── Option 2: Tailscale (Funnel) ────────────────────────────────────────────
+  # Requires a Tailscale account + an auth key (https://login.tailscale.com/admin/settings/keys).
+  # Put it in .env as TAILSCALE_AUTH_KEY. You must also enable HTTPS/Funnel on
+  # the machine in the Tailscale admin UI. More setup than ngrok but no
+  # third-party endpoint — traffic flows through your tailnet.
+  #
+  # tailscale:
+  #   image: tailscale/tailscale:latest
+  #   container_name: lazydev-tailscale
+  #   hostname: lazydev
+  #   environment:
+  #     - TS_AUTHKEY=${TAILSCALE_AUTH_KEY}
+  #     - TS_STATE_DIR=/var/lib/tailscale
+  #     - TS_USERSPACE=false
+  #   volumes:
+  #     - tailscale-data:/var/lib/tailscale
+  #   # The Tailscale container joins your tailnet; expose port 443 via Funnel
+  #   # from the Tailscale admin UI, then proxy to app:3200 with a small reverse
+  #   # proxy (caddy/nginx) — left as an exercise since Funnel config is per-tailnet.
+  #   cap_add:
+  #     - NET_ADMIN
+  #   depends_on:
+  #     - app
+  #   networks:
+  #     - lazydev-network
+
+volumes:
+  postgres-data:
+  redis-data:
+  qdrant-data:
+  prometheus-data:
+  grafana-data:
+  worktrees:
+  repo-cache:
+  # tailscale-data:
+
+networks:
+  lazydev-network:
+    driver: bridge

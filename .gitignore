@@ -1,0 +1,16 @@
+node_modules
+.env
+*.pem
+dist/
+.DS_Store
+
+# Sprint 2: Repository cache — cloned repos should not be committed
+repo-cache/
+
+# Ignore webassembly files
+*.wasm
+worktrees/
+
+# Debug/run logs
+log-*.txt
+logs-*.txt

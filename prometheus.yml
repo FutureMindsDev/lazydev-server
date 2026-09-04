@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # LazyDev NestJS backend — exposes /metrics via @willsoto/nestjs-prometheus
+  # (PrometheusModule.register() in app.module.ts). Default metrics include
+  # process memory, event loop lag, GC stats, and Node.js version info.
+  - job_name: 'lazydev-app'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['app:3200']
+        labels:
+          service: 'lazydev-backend'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

@@ -1,0 +1,72 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    ssh \
+    sudo \
+    build-essential \
+    zip \
+    unzip \
+    sed \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pipx
+RUN pip install --no-cache-dir pipx
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Install Node.js (for TypeScript/JavaScript LSP)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g typescript typescript-language-server
+
+# Install Go (for gopls)
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then \
+    curl -O https://dl.google.com/go/go1.22.2.linux-arm64.tar.gz && \
+    tar -C /usr/local -xzf go1.22.2.linux-arm64.tar.gz && \
+    rm go1.22.2.linux-arm64.tar.gz; \
+    else \
+    curl -O https://dl.google.com/go/go1.22.2.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go1.22.2.linux-amd64.tar.gz && \
+    rm go1.22.2.linux-amd64.tar.gz; \
+    fi
+ENV PATH=$PATH:/usr/local/go/bin
+RUN CGO_ENABLED=0 go install golang.org/x/tools/gopls@latest
+ENV PATH=$PATH:/root/go/bin
+
+# Install Rust & rust-analyzer
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup component add rust-analyzer
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Clone and install Serena
+WORKDIR /app
+RUN git clone https://github.com/oraios/serena.git . \
+    && uv venv \
+    && uv pip install -r pyproject.toml -e .
+
+# Configure Serena (disable GUI and dashboard)
+ENV SERENA_HOME=/app/config
+RUN mkdir -p $SERENA_HOME \
+    && cp src/serena/resources/serena_config.template.yml $SERENA_HOME/serena_config.yml \
+    && sed -i 's/gui_log_window:.*/gui_log_window: False/' $SERENA_HOME/serena_config.yml \
+    && sed -i 's/web_dashboard_open_on_launch:.*/web_dashboard_open_on_launch: False/' $SERENA_HOME/serena_config.yml \
+    && sed -i 's/web_dashboard_listen_address:.*/web_dashboard_listen_address: "0.0.0.0"/' $SERENA_HOME/serena_config.yml \
+    && sed -i '/markdown:/,+5d' $SERENA_HOME/serena_config.yml
+
+# Expose the port for the MCP Streamable HTTP server
+EXPOSE 3333
+
+# Use the virtual environment
+ENTRYPOINT ["/bin/bash", "-c", "source .venv/bin/activate && $0 $@"]
+
+# Command to run the Serena agent in Streamable HTTP mode, bound to all interfaces
+CMD ["serena-agent", "start-mcp-server", "--transport", "streamable-http", "--port", "3333", "--host", "0.0.0.0"]
