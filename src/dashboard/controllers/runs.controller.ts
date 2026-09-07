@@ -13,11 +13,11 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { DashboardService } from '../dashboard.service';
 import { AuditLogService } from '../../orchestration/audit-log.service';
+import { FeedbackRequest } from '../dashboard.dto';
 import type {
   AuditLogDto,
   Paginated,
   RunDetailDto,
-  FeedbackRequest,
   FeedbackResponse,
   FeedbackStatus,
 } from '../dashboard.dto';

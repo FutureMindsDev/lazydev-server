@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 
@@ -44,6 +45,17 @@ async function bootstrap() {
     origin: origins,
     credentials: true,
   });
+
+  // Global validation pipe — strips unknown properties (so clients can't
+  // smuggle fields past the DTO), rejects non-whitelisted properties, and
+  // transforms types. Request DTOs use class-validator decorators.
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
 
   // Default 3200 rather than 3000: port 3000 is commonly taken by other local
   // agent tooling (e.g. the Hermes WhatsApp bridge). Override with PORT.

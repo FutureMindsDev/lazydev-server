@@ -5,7 +5,21 @@
  * These mirror the frontend's `src/lib/types.ts` exactly so that flipping
  * NEXT_PUBLIC_ENABLE_MOCKS=false hits the real API with zero component
  * changes. See BACKEND_API_SPEC.md in the frontend repo for the contract.
+ *
+ * Request DTOs (FeedbackRequest, UpdateLlmSettingsRequest,
+ * CreateProviderConfigRequest, UpdateProviderConfigRequest) are classes
+ * with class-validator decorators so the global ValidationPipe can
+ * whitelist + validate incoming bodies. Response DTOs remain interfaces
+ * since they're only used for output typing.
  */
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsNumber,
+  IsObject,
+  MaxLength,
+} from 'class-validator';
 
 export type RunStatus = 'SUCCESS' | 'FAILED';
 
@@ -75,8 +89,11 @@ export interface RunDetailDto extends AuditLogDto {
   feedbackStatus?: FeedbackStatus;
 }
 
-export interface FeedbackRequest {
-  feedback: string;
+export class FeedbackRequest {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(10000)
+  feedback!: string;
 }
 
 export interface FeedbackResponse {
@@ -210,15 +227,30 @@ export interface SettingsDto {
 }
 
 /** Body for PUT /api/dashboard/settings/llm (BYOK write). */
-export interface UpdateLlmSettingsRequest {
+export class UpdateLlmSettingsRequest {
   /** GitHub App installation to scope the config to; omit/null for global. */
+  @IsOptional()
+  @IsNumber()
   installationId?: number | null;
+
   /** Required when creating a config; omit to keep the stored key. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   apiKey?: string;
+
   /** Optional — blank means "use the provider's default endpoint". */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   baseUrl?: string | null;
+
   /** Required when creating a config. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
   model?: string;
+
   /**
    * Per-agent model name overrides within the same BYOK provider. Pass a
    * partial map to merge (e.g. { planner: "strong-model" }), null to clear
@@ -226,30 +258,68 @@ export interface UpdateLlmSettingsRequest {
    * known agent role are kept; unknown keys are silently dropped.
    * @deprecated — use agentAssignments for per-agent provider selection.
    */
+  @IsOptional()
+  @IsObject()
   agentModelOverrides?: Record<string, string> | null;
+
   /**
    * Per-agent provider assignments (role → providerConfigId). Pass null to
    * clear all assignments, or a partial map to set/merge. Only keys matching
    * a known agent role are kept; providerConfigIds that don't exist in the
    * same scope are silently dropped.
    */
+  @IsOptional()
+  @IsObject()
   agentAssignments?: Record<string, string> | null;
 }
 
 /** Body for POST /api/dashboard/settings/providers (create a provider config). */
-export interface CreateProviderConfigRequest {
+export class CreateProviderConfigRequest {
+  @IsOptional()
+  @IsNumber()
   installationId?: number | null;
-  label: string;
-  apiKey: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  label!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  apiKey!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   baseUrl?: string | null;
-  model: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  model!: string;
 }
 
 /** Body for PUT /api/dashboard/settings/providers/:id (update a provider config). */
-export interface UpdateProviderConfigRequest {
+export class UpdateProviderConfigRequest {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
   label?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   apiKey?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   baseUrl?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
   model?: string;
 }
 

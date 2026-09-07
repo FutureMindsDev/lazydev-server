@@ -10,14 +10,16 @@ import {
   Body,
 } from '@nestjs/common';
 import { DashboardService } from '../dashboard.service';
+import {
+  UpdateLlmSettingsRequest,
+  CreateProviderConfigRequest,
+  UpdateProviderConfigRequest,
+} from '../dashboard.dto';
 import type {
   SettingsDto,
   GrafanaConfig,
   ByokSettingsDto,
-  UpdateLlmSettingsRequest,
   ProviderConfigDto,
-  CreateProviderConfigRequest,
-  UpdateProviderConfigRequest,
 } from '../dashboard.dto';
 
 @Controller('api/dashboard')
