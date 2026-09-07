@@ -42,6 +42,8 @@
     "@willsoto/nestjs-prometheus": "^6.1.0",
     "axios": "^1.18.1",
     "bullmq": "^5.77.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
     "cookie-parser": "^1.4.7",
     "helmet": "^8.2.0",
     "ioredis": "^5.10.1",
