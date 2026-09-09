@@ -1,3 +1,17 @@
+/**
+ * Copyright (c) 2026 FutureMindsDev. All rights reserved.
+ *
+ * LazyDev™ is a trademark of FutureMindsDev.
+ * Organization : https://github.com/FutureMindsDev
+ *
+ * Authors:
+ *   Arkar Chan Myae  <https://github.com/arkar-chanmyae>
+ *   Khin Me Me Latt  <https://github.com/KhinMeMeLatt>
+ *
+ * Licensed under the MIT License.
+ * See LICENSE file in the project root for full license information.
+ */
+
 import { All, Controller, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { McpServerService } from './mcp-server.service';
