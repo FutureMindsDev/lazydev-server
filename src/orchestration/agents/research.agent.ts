@@ -43,7 +43,7 @@ export class ResearchAgent {
     private readonly vectorDbService: VectorDbService,
     private readonly embeddingService: EmbeddingService,
     private readonly serenaMcp: SerenaMcpService,
-  ) {}
+  ) { }
 
   // ─────────────────────────────────────────────────────────────────────────
   // ReAct tools — exposed to the LLM via bindTools so it can iteratively
@@ -70,7 +70,7 @@ export class ResearchAgent {
           repoFullName: z
             .string()
             .describe(
-              'The full repository name (e.g. "FutureMindsDev/lazy-issue-resolver")',
+              'The full repository name (e.g. "FutureMindsDev/lazydev-server")',
             ),
         }),
         func: async ({ query, repoFullName }: { query: string; repoFullName: string }) => {

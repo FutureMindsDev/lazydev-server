@@ -158,7 +158,7 @@ export class PlannerAgent {
           repoFullName: z
             .string()
             .describe(
-              'The full repository name (e.g. "FutureMindsDev/lazy-issue-resolver")',
+              'The full repository name (e.g. "FutureMindsDev/lazydev-server")',
             ),
         }),
         func: async ({

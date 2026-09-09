@@ -28,7 +28,7 @@ async function bootstrap() {
   app.use(cookieParser());
 
   // CORS — locked to the dashboard frontend origin(s). The dashboard UI
-  // (lazydev-frontend) runs on a different port/host than this API, and in
+  // (lazydev-client) runs on a different port/host than this API, and in
   // Mode B it sends credentials (session cookies), so credentials must be
   // enabled. Origins come from CORS_ORIGINS (comma-separated); defaults to
   // the local Next.js dev server.
