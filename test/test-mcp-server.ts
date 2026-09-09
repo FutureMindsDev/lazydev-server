@@ -1,4 +1,18 @@
 /**
+ * Copyright (c) 2026 FutureMindsDev. All rights reserved.
+ *
+ * LazyDev™ is a trademark of FutureMindsDev.
+ * Organization : https://github.com/FutureMindsDev
+ *
+ * Authors:
+ *   Arkar Chan Myae  <https://github.com/arkar-chanmyae>
+ *   Khin Me Me Latt  <https://github.com/KhinMeMeLatt>
+ *
+ * Licensed under the MIT License.
+ * See LICENSE file in the project root for full license information.
+ */
+
+/**
  * Manual smoke test for the LazyDev MCP Server against a *running* instance
  * (e.g. `docker compose up`). Connects as a real MCP client — the same way
  * Hermes and OpenClaw do — and exercises tool discovery plus a status call.
