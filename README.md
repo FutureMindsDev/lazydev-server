@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="https://drive.google.com/thumbnail?id=12Z0AzUqRPNO3WDE0_CGCjzCD4uDB5eDw&sz=w500" alt="FutureMindsDev Logo" width="500" style="border-radius: 50%;" />
+</div>
+
 # LazyDev Server (self-hosted)
 
 LazyDev is an AI-native autonomous CI engineering assistant that monitors GitHub issues, generates validated code fixes, and pushes fix branches safely.
