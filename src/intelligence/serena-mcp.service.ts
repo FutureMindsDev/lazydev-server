@@ -34,22 +34,60 @@ export class SerenaMcpService implements OnModuleInit, OnModuleDestroy {
     const SERENA_URL =
       process.env.SERENA_URL || 'http://lazydev-serena:3333/mcp';
 
-    try {
-      this.transport = new StreamableHTTPClientTransport(new URL(SERENA_URL));
-      this.client = new Client(
-        {
-          name: 'lazydev-orchestrator',
-          version: '1.0.0',
-        },
-        {
-          capabilities: {},
-        },
-      );
+    // Docker race guard: the app container can start before the serena
+    // container is ready to accept MCP connections. Retry the initial
+    // connect so a cold `docker compose up` does not permanently leave the
+    // client disconnected. Attempts/delay are tunable via env (see
+    // .env.example §4); defaults to 3 attempts, 5s apart.
+    const maxAttempts = Math.max(
+      1,
+      parseInt(process.env.SERENA_CONNECT_RETRIES ?? '3', 10) || 3,
+    );
+    const retryDelayMs = Math.max(
+      0,
+      parseInt(process.env.SERENA_CONNECT_RETRY_DELAY_MS ?? '5000', 10) || 0,
+    );
 
-      await this.client.connect(this.transport);
-      this.logger.log('Successfully connected to Serena MCP Server');
-    } catch (error) {
-      this.logger.error('Failed to connect to Serena MCP Server:', error);
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        // Drop any half-open client/transport from a previous failed attempt
+        // so each retry starts clean.
+        this.client = null;
+        this.transport = null;
+        this.transport = new StreamableHTTPClientTransport(new URL(SERENA_URL));
+        this.client = new Client(
+          {
+            name: 'lazydev-orchestrator',
+            version: '1.0.0',
+          },
+          {
+            capabilities: {},
+          },
+        );
+
+        await this.client.connect(this.transport);
+        this.logger.log(
+          `Successfully connected to Serena MCP Server (attempt ${attempt}/${maxAttempts})`,
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        this.client = null;
+        this.transport = null;
+        if (attempt < maxAttempts) {
+          const detail = error instanceof Error ? error.message : String(error);
+          this.logger.warn(
+            `Serena MCP connect failed (attempt ${attempt}/${maxAttempts}): ${detail}. Retrying in ${retryDelayMs}ms...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        } else {
+          this.logger.error(
+            `Failed to connect to Serena MCP Server after ${maxAttempts} attempt(s). Pipeline code tools will fail until Serena is reachable and the app is restarted:`,
+            lastError,
+          );
+        }
+      }
     }
   }
 
