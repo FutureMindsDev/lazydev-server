@@ -24,7 +24,7 @@ services:
       # .env). Uncomment to use a different provider (its own *_API_KEY +
       # *_BASE_URL) and/or model for a specific agent. Each field is
       # independent — unset fields inherit the shared default. See
-      # .env.example §2b for full examples.
+      # .env.example §2c for full examples.
       # - PLANNER_MODEL=
       # - PLANNER_API_KEY=
       # - PLANNER_BASE_URL=
@@ -58,6 +58,12 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_started
+      # Ordering hint so the app usually starts after serena. This does NOT
+      # guarantee Serena's MCP endpoint is ready (no healthcheck on the
+      # serena image) — the app's SerenaMcpService still retries the initial
+      # connect 3x (see SERENA_CONNECT_RETRIES in .env.example §4).
+      serena:
         condition: service_started
     volumes:
       # Mount the Docker socket so the SandboxAgent can spin up sibling containers
