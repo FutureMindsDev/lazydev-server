@@ -79,14 +79,17 @@ export class ValidationService {
         break;
       case ProjectLanguage.UNKNOWN:
       default:
+        // Be honest: we have no idea how to test this repo, so say so and
+        // fail the job. Auto-passing would let untested code reach a PR.
         this.logger.warn(
-          `Unknown language for worktree ${worktreePath}. Skipping validation.`,
+          `Unknown language for worktree ${worktreePath}. Failing validation — needs human test.`,
         );
         return {
-          success: true,
+          success: false,
           language,
-          stdout: 'Skipped - unknown language',
-          stderr: '',
+          stdout: '',
+          stderr:
+            'Unknown project language — automatic validation is not possible. Needs human test.',
           durationMs: 0,
         };
     }

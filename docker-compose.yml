@@ -1,10 +1,52 @@
 services:
+  # Only this proxy touches the real Docker socket. The app talks to the
+  # proxy over TCP instead — so a bad `npm install` script inside the sandbox
+  # can't take over the host through the raw socket.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: lazydev-socket-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Allow only what the sandbox needs: run/list containers, use images,
+      # and basic ping/version checks. Everything else stays blocked (0).
+      - CONTAINERS=1
+      - IMAGES=1
+      - PING=1
+      - VERSION=1
+      - POST=1
+      - AUTH=0
+      - BUILD=0
+      - COMMIT=0
+      - CONFIGS=0
+      - CONTAINERS_CREATE=1
+      - CONTAINERS_START=1
+      - CONTAINERS_WAIT=1
+      - DISTRIBUTION=0
+      - EVENTS=0
+      - EXEC=0
+      - IMAGES_CREATE=1
+      - IMAGES_PULL=1
+      - INFO=0
+      - NETWORKS=0
+      - NODES=0
+      - PLUGINS=0
+      - SECRETS=0
+      - SERVICES=0
+      - SESSION=0
+      - SWARM=0
+      - SYSTEM=0
+      - TASKS=0
+      - VOLUMES=0
+    expose:
+      - '2375'
+    networks:
+      - lazydev-network
+    restart: unless-stopped
+
   app:
     build: .
     container_name: lazydev-app
-    # Run as root so the SandboxAgent can access /var/run/docker.sock.
-    # The Docker socket is owned by root on the host; the 'node' user cannot connect to it.
-    user: root
     ports:
       - "3200:3200"   # Main REST API + GitHub webhooks + MCP
     environment:
@@ -15,6 +57,11 @@ services:
       - OLLAMA_HOST=http://host.docker.internal:11434
       - LAZYDEV_CONTAINER_NAME=lazydev-app
       - WORKTREE_BASE_PATH=/app/worktrees
+      # Sandbox talks to Docker through the socket-proxy, never the raw
+      # socket. Runs as the unprivileged 'node' user with a 10-min kill.
+      - DOCKER_HOST=tcp://socket-proxy:2375
+      - SANDBOX_USER=node
+      - SANDBOX_TIMEOUT_MS=600000
       # MCP Server (Hermes / OpenClaw):
       #  Served on port 3200 at /mcp (shared with the public API).
       #  Set MCP_AUTH_TOKEN in .env so clients must send
@@ -55,6 +102,8 @@ services:
     env_file:
       - .env
     depends_on:
+      socket-proxy:
+        condition: service_started
       postgres:
         condition: service_healthy
       redis:
@@ -66,8 +115,6 @@ services:
       serena:
         condition: service_started
     volumes:
-      # Mount the Docker socket so the SandboxAgent can spin up sibling containers
-      - /var/run/docker.sock:/var/run/docker.sock
       # Named volume for worktrees — shared with sibling sandbox containers via
       # --volumes-from lazydev-app. Works cross-platform (Mac + Linux) because
       # Docker manages named volumes; /tmp is ephemeral and NOT shared by --volumes-from.
@@ -99,15 +146,15 @@ services:
     image: postgres:15-alpine
     container_name: lazydev-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: lazy_issue_resolver
     ports:
-      - '5432:5432'
+      - '127.0.0.1:5432:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -117,8 +164,17 @@ services:
   redis:
     image: redis:7-alpine
     container_name: lazydev-redis
+    # Empty REDIS_PASSWORD = plain dev server. Set a password in .env and all
+    # four app clients (BullMQ, locks, feedback, SSE events) send it.
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - |
+        if [ -z "$REDIS_PASSWORD" ]; then exec redis-server; else exec redis-server --requirepass "$REDIS_PASSWORD"; fi
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
     volumes:
       - redis-data:/data
     networks:
@@ -128,8 +184,8 @@ services:
     image: qdrant/qdrant:latest
     container_name: lazydev-qdrant
     ports:
-      - '6333:6333'
-      - '6334:6334'
+      - '127.0.0.1:6333:6333'
+      - '127.0.0.1:6334:6334'
     volumes:
       - qdrant-data:/qdrant/storage
     networks:

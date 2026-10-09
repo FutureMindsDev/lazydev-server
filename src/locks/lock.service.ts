@@ -46,6 +46,7 @@ export class LockService implements OnModuleInit {
     this.redis = new Redis({
       host: this.configService.get<string>('REDIS_HOST', 'localhost'),
       port: this.configService.get<number>('REDIS_PORT', 6379),
+      password: this.configService.get<string>('REDIS_PASSWORD') || undefined,
     });
 
     // Built synchronously in the constructor rather than in onModuleInit:
