@@ -34,12 +34,15 @@ function stateWithIssue(title: string, body: string, taskId = 't1'): AgentState 
 describe('PipelineGatesService', () => {
   let gates: PipelineGatesService;
   let decision: { decide: jest.Mock };
-  let feedback: { read: jest.Mock };
+  let feedback: { read: jest.Mock; storeGateStatus: jest.Mock };
   let notifications: { sendDiscordNotification: jest.Mock };
 
   beforeEach(async () => {
     decision = { decide: jest.fn() };
-    feedback = { read: jest.fn().mockResolvedValue(null) };
+    feedback = {
+      read: jest.fn().mockResolvedValue(null),
+      storeGateStatus: jest.fn().mockResolvedValue(undefined),
+    } as any;
     notifications = {
       sendDiscordNotification: jest.fn().mockResolvedValue(undefined),
     };
