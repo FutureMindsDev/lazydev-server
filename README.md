@@ -1,3 +1,7 @@
+<div align="center">
+<img src="https://drive.google.com/thumbnail?id=12Z0AzUqRPNO3WDE0*CGCjzCD4uDB5eDw&sz=w500" alt="FutureMindsDev Logo" width="500" style="border-radius: 50%;" />*
+</div>
+
 # LazyDev Server (self-hosted)
 
 LazyDev is an AI-native autonomous CI engineering assistant that monitors GitHub issues, generates validated code fixes, and pushes fix branches safely.
@@ -29,7 +33,7 @@ This is the **self-hosted** build of the backend: you run the entire stack yours
 - **Cloud server / VM**: Linux (Ubuntu/Debian recommended) for production, or macOS/Linux for local development.
 - **Node.js** v20+ (only needed for local dev; the Docker image bundles Node).
 - **Docker & Docker Compose**.
-- **GitHub App credentials** — App ID, Private Key (`.pem`), Webhook Secret (created by you; see §2).
+- **GitHub App credentials** — App ID, Private Key (paste the full key text into `GITHUB_PRIVATE_KEY` in `.env`), Webhook Secret (created by you; see §2).
 - **LLM API key** — OpenAI / Google Gemini / Anthropic / DeepSeek / OpenRouter, **or** a running **Ollama** instance (free local fallback).
 - **Discord webhook URL** (optional, for push notifications without an AI agent — see §8; Slack/Telegram via gateway bridge).
 
@@ -45,25 +49,25 @@ LazyDev interacts with GitHub through a GitHub App registered under your account
 2. **Name**: Choose a unique name (e.g. `lazydev-<your-team>`).
 3. **Homepage URL**: Set to your repository or company domain (e.g. `https://github.com/<your-org>/lazydev-server`).
 4. **Webhook URL**: Set to `https://<your-public-url>/webhooks/github` (see [§5](#optional-webhook-endpoint--tunnel-configuration-ngrok--tailscale) for setting up a public domain or running an ngrok tunnel).
-5. **Webhook secret**: Enter a strong secret string (you will put this into `.env` as `GITHUB_WEBHOOK_SECRET`).
+5. **Webhook secret**: Enter a strong secret string (you will put this into `.env` as `GITHUB_WEBHOOK_SECRET`). This one is REQUIRED — the app refuses to start without it (fail-closed), because forgeable webhooks would let anyone queue free jobs on your LLM budget.
 6. Under **Repository permissions**, grant:
 
-   | Permission | Level | Why |
-   |---|---|---|
-   | Metadata | Read | Mandatory for all GitHub Apps. |
-   | Contents | Read & write | Clone repository code and push fix branches. |
-   | Pull requests | Read & write | Open and update pull requests with validated fixes. |
-   | Issues | **Read & write** | Read issues; *write* is required by the MCP `implement_new_feature` tool to create tracking issues. |
+| Permission | Level | Why |
+| --- | --- | --- |
+| Metadata | Read | Mandatory for all GitHub Apps. |
+| Contents | Read & write | Clone repository code and push fix branches. |
+| Pull requests | Read & write | Open and update pull requests with validated fixes. |
+| Issues | **Read & write** | Read issues; *write* is required by the MCP `implement_new_feature` tool to create tracking issues. |
 
-7. Under **Subscribe to events**, select:
-   - **Issues**
-   - **Issue comment**
-   - **Check run**
-8. Click **Create GitHub App**.
-9. In the newly created app's settings:
-   - Copy the **App ID** (save this for `GITHUB_APP_ID` in `.env`).
-   - Scroll to **Private keys** and click **Generate a private key**. A `.pem` file will download. Move this file into your `lazydev-server` directory (e.g. `github-private-key.pem`).
-10. In the left sidebar, click **Install App**, choose your account or organization, and select **Only select repositories** (the repos you want LazyDev to monitor) or all repositories.
+1. Under **Subscribe to events**, select:
+- **Issues**
+- **Issue comment**
+- **Check run**
+1. Click **Create GitHub App**.
+2. In the newly created app's settings:
+- Copy the **App ID** (save this for `GITHUB_APP_ID` in `.env`).
+- Scroll to **Private keys** and click **Generate a private key**. A `.pem` file will download. Open it and paste the FULL text into `GITHUB_PRIVATE_KEY` in `.env` (quoted, with real newlines) — the key is passed as an env value only, never as a file (never COPY `*.pem` into the Docker image).
+1. In the left sidebar, click **Install App**, choose your account or organization, and select **Only select repositories** (the repos you want LazyDev to monitor) or all repositories.
 
 > [!IMPORTANT]
 > If you update repository permissions later, GitHub emails the installation owner an approval request. The app retains its **old** permissions until approved, so operations requiring new permissions will fail until accepted.
@@ -86,7 +90,11 @@ Edit `.env`. The file is grouped into clearly labelled sections (GitHub App, LLM
 # GitHub App (from §2)
 GITHUB_APP_ID=123456
 GITHUB_WEBHOOK_SECRET=your_webhook_secret_here
-GITHUB_PRIVATE_KEY_PATH=github-private-key.pem
+# Env value only: paste the FULL key text with real newlines, quoted.
+# There is no file-path mode — never COPY *.pem into the image.
+# GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
+# ...
+# -----END RSA PRIVATE KEY-----"
 
 # LLM provider — RECOMMENDED: set LLM_CONFIG_ENCRYPTION_KEY (.env §2a)
 # and add your provider in the dashboard (Settings → LLM provider).
@@ -95,9 +103,12 @@ GITHUB_PRIVATE_KEY_PATH=github-private-key.pem
 # LLM_MODEL=gpt-4o-mini
 ```
 
-Everything else has sensible defaults for a Docker deployment.
+Everything else has sensible defaults for a Docker deployment. Two things to know:
 
-> **Do I need the DB / Redis / server / repo-cache / sandbox configs in `.env`?**  
+- `GITHUB_WEBHOOK_SECRET` is REQUIRED, not optional. The app exits with `FATAL…` on boot if it is missing or blank (whitespace counts as missing).
+- `REDIS_PASSWORD`: leave it empty for local dev (no password), or set a strong value — `docker-compose.yml` passes it to the Redis server AND all app clients send it automatically, so they always match. All infra ports (postgres/redis/qdrant) are bound to `127.0.0.1`, so they are reachable only from your own machine.
+
+> **Do I need the DB / Redis / server / repo-cache / sandbox configs in **`.env`**?**  
 > **No**, if you are running the full stack via `docker compose up`. The `docker-compose.yml` already sets `DB_HOST=postgres`, `REDIS_HOST=redis`, `QDRANT_URL=http://qdrant:6333`, `WORKTREE_BASE_PATH=/app/worktrees`, etc. Those variables are listed in `.env.example` only so you can override them for **local development** (`npm run start:dev`) or external infrastructure.
 
 ---
@@ -107,7 +118,7 @@ Everything else has sensible defaults for a Docker deployment.
 LazyDev supports a wide range of LLM and embedding providers with smart auto-detection. `.env.example` numbers the LLM setup as **§2a → §2b → §2c** on purpose:
 
 | Section | What | When |
-|---|---|---|
+| --- | --- | --- |
 | **§2a — dashboard UI (RECOMMENDED)** | Set `LLM_CONFIG_ENCRYPTION_KEY`, then add providers in **Settings → LLM Provider** | Normal use. No secrets in files, keys rotatable from the UI. |
 | **§2b — `.env` provider** | `OPENAI_API_KEY` + `OPENAI_BASE_URL` + `LLM_MODEL` (Options A–L below) | Headless servers / CI / no frontend. Ignored when a §2a row exists for the run. |
 | **§2c — per-agent `.env` overrides** | `PLANNER_MODEL`, `PATCH_GENERATOR_API_KEY`, … | Route one agent to a different provider/model. Replaced by §2a when a dashboard row exists (use the UI's per-agent role mapping instead). |
@@ -116,8 +127,8 @@ Start with **§2a**. Only fill in **§2b** if you are deliberately not using the
 
 You can configure credentials using either of two methods:
 
-- **Option 1 — Configure keys via the client dashboard (`lazydev-client`) [§2a, RECOMMENDED]**: Dynamic UI configuration stored securely in PostgreSQL without restarting containers or editing files.
-- **Option 2 — Configure keys via the backend (`.env`) [§2b/§2c]**: Ideal for headless server deployments, Docker configurations, and automated CI/CD.
+- **Option 1 — Configure keys via the client dashboard (**`lazydev-client`**) [§2a, RECOMMENDED]**: Dynamic UI configuration stored securely in PostgreSQL without restarting containers or editing files.
+- **Option 2 — Configure keys via the backend (**`.env`**) [§2b/§2c]**: Ideal for headless server deployments, Docker configurations, and automated CI/CD.
 
 ---
 
@@ -130,7 +141,7 @@ LazyDev auto-detects the provider from `OPENAI_BASE_URL` and routes to the right
 Set `OPENAI_API_KEY` + `OPENAI_BASE_URL` + `LLM_MODEL`:
 
 | Provider | `OPENAI_BASE_URL` | Example `LLM_MODEL` | Client |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **OpenAI** (native) | *(leave blank)* | `gpt-4o-mini` | ChatOpenAI |
 | **Google Gemini** (direct) | `https://generativelanguage.googleapis.com` | `gemini-3.7-flash` | ChatGoogleGenerativeAI (native) |
 | **OpenRouter** | `https://openrouter.ai/api/v1` | `anthropic/claude-5-sonnet` | ChatOpenAI (OpenAI-compat) |
@@ -175,7 +186,7 @@ Every agent supports the `<AGENT>_MODEL`, `<AGENT>_API_KEY`, `<AGENT>_BASE_URL` 
 `EMBEDDING_PROVIDER` selects the embedding backend (`google` | `openai` | `ollama`; auto-detected if unset). `EMBEDDING_MODEL` is the model name:
 
 | Provider | Models |
-|---|---|
+| --- | --- |
 | Google | `gemini-embedding-2` (default), `text-embedding-004`, `text-multilingual-embedding-002` |
 | OpenAI | `text-embedding-3-small`, `text-embedding-3-large` |
 | Ollama | `nomic-embed-text`, `mxbai-embed-large` |
@@ -191,15 +202,15 @@ EMBEDDING_BASE_URL=https://api.openai.com/v1
 
 ### Option 1 — Configure keys via the client dashboard (`lazydev-client`) [§2a, RECOMMENDED]
 
-Instead of managing API keys inside `.env` files, you can configure and update your LLM providers directly from the web UI using the companion frontend repository [`lazydev-client`](https://github.com/FutureMindsDev/lazydev-client).
+Instead of managing API keys inside `.env` files, you can configure and update your LLM providers directly from the web UI using the companion frontend repository [\`lazydev-client\`](https://github.com/FutureMindsDev/lazydev-client).
 
 #### How to configure via the dashboard
 
 1. Start `lazydev-client` (see [§10](#10-connecting-the-frontend-client-dashboard)) and open `http://localhost:3000`.
 2. Navigate to **Settings** → **LLM Provider**.
 3. You have two flexible ways to manage keys inside the UI:
-   - **Default BYOK Provider**: Choose your provider (OpenAI, Gemini, Anthropic, DeepSeek, OpenRouter, Ollama, etc.), enter your API key, and select or type the default model name.
-   - **Per-Agent Provider Role Mapping**: Add multiple named provider configs and assign specific agent roles (**Planner**, **Patch Generator**, **Validation**, **Onboarding**) to different providers and models. For instance, you can route the *Planner* and *Patch Generator* to Claude Sonnet 3.5 while routing *Onboarding* to a lightweight DeepSeek or Gemini Flash model.
+- **Default BYOK Provider**: Choose your provider (OpenAI, Gemini, Anthropic, DeepSeek, OpenRouter, Ollama, etc.), enter your API key, and select or type the default model name.
+- **Per-Agent Provider Role Mapping**: Add multiple named provider configs and assign specific agent roles (**Planner**, **Patch Generator**, **Validation**, **Onboarding**) to different providers and models. For instance, you can route the *Planner* and *Patch Generator* to Claude Sonnet 3.5 while routing *Onboarding* to a lightweight DeepSeek or Gemini Flash model.
 
 #### Security & At-Rest Encryption
 
@@ -214,8 +225,8 @@ Matching the pipeline code (`LlmService.getModel` — a resolved dashboard row f
 
 1. **Dashboard per-agent mapping** (§2a UI: agent → provider assignment / model override) — most specific.
 2. **Dashboard shared row** (§2a UI: default provider + model) — replaces all `.env` LLM values for the run.
-3. **Per-agent `.env` overrides** (§2c: `PLANNER_MODEL`, etc.) — only when no dashboard row exists.
-4. **Shared `.env` defaults** (§2b: `OPENAI_API_KEY`, `LLM_MODEL`). Deleting the dashboard config immediately reverts to `.env` resolution on the next run.
+3. **Per-agent **`.env`** overrides** (§2c: `PLANNER_MODEL`, etc.) — only when no dashboard row exists.
+4. **Shared **`.env`** defaults** (§2b: `OPENAI_API_KEY`, `LLM_MODEL`). Deleting the dashboard config immediately reverts to `.env` resolution on the next run.
 
 ---
 
@@ -228,20 +239,60 @@ docker compose up -d --build
 ```
 
 > Use `--build` the **first time** and whenever you change source code or the `Dockerfile`. For config-only changes (`.env`, `docker-compose.yml`), restart without rebuilding:
-> ```bash
+> \`bash
 > docker compose up -d
-> ```
+> \`
 
 ### Docker socket & permissions
 
-The app container requires access to `/var/run/docker.sock` so the `SandboxAgent` can spin up sibling containers for isolated code execution and validation.
+The app NEVER mounts the raw `/var/run/docker.sock`. Instead, a
+`socket-proxy` sidecar (`tecnativa/docker-socket-proxy`) holds the real
+socket (read-only) and only allows container/image create/start/wait/pull
+calls — everything else (exec, swarm, secrets, volumes, …) stays blocked.
+The app talks to it via `DOCKER_HOST=tcp://socket-proxy:2375`.
 
-> [!WARNING]
-> Mounting `/var/run/docker.sock` gives the container control over the host Docker daemon. This is strictly required for the `SandboxAgent`. The container runs as `root` (`user: root` in `docker-compose.yml`) to ensure socket access. Ensure your host machine is adequately secured.
+Why: the raw socket is full host control — a bad `npm install` lifecycle
+script inside the sandbox could take over the machine. The proxy shrinks
+that risk to just "run containers".
+
+The sandbox container itself runs as the unprivileged `node` user
+(`SANDBOX_USER=node`, never `root`) with a 10-minute kill
+(`SANDBOX_TIMEOUT_MS=600000`), dropped Linux capabilities, and strict checks
+on every docker flag before it runs.
 
 ### Cross-platform sandbox (Mac, Linux, Windows)
 
 LazyDev uses a **named Docker volume** (`worktrees`) to share workspace files between the app container and sandbox sibling containers. This works identically across platforms without host path binding issues.
+
+### Verify it works (smoke checks)
+
+```bash
+# 1. App runs as the unprivileged user with the proxy as its Docker host
+docker exec lazydev-app whoami   # → node
+docker exec lazydev-app sh -c 'echo $DOCKER_HOST'   # → tcp://socket-proxy:2375
+
+# 2. App booted cleanly (no auth errors against Redis)
+docker logs lazydev-app 2>&1 | grep -E "GitHub App initialized|Nest application successfully started"
+docker logs lazydev-app 2>&1 | grep -ci "NOAUTH"   # → 0
+
+# 3. Redis password works: no password → rejected, with password → PONG
+docker exec lazydev-redis redis-cli ping   # → NOAUTH (when REDIS_PASSWORD is set)
+docker exec lazydev-redis redis-cli -a "<your REDIS_PASSWORD>" ping   # → PONG
+
+# 4. Rate limiting is enforced (100 allowed per minute, then 429s)
+python3 -c "
+import urllib.request, urllib.error, collections
+codes = collections.Counter()
+for i in range(120):
+    try:
+        urllib.request.urlopen('http://localhost:3200/api/dashboard/meta', timeout=5)
+        codes['200'] += 1
+    except urllib.error.HTTPError as e:
+        codes[str(e.code)] += 1
+print(dict(codes))"   # → something like {'200': 100, '429': 20}
+```
+
+Full check suite (unit tests + image hygiene + fail-closed boot): `npm run build && npm test` (expect 341/341), plus `docker build -t t . && docker run --rm t sh -c "ls /app/*.pem || echo NO_PEM_GOOD"` (expect `NO_PEM_GOOD`).
 
 ### Optional: Webhook endpoint & tunnel configuration (in-Docker tunnel vs hosted server)
 
@@ -257,26 +308,26 @@ The tunnel forwards to the `app` service on port 3200, so you don't install ngro
 
 1. Sign up at [ngrok.com](https://ngrok.com) and get an authtoken.
 2. Add your token to `.env` (leave it blank if you use Path B):
-   ```env
+```env
    NGROK_AUTHTOKEN=your_ngrok_authtoken_here
    # NGROK_DOMAIN=your-reserved-domain.ngrok-free.app  # Optional (paid plan)
-   ```
-3. Open `docker-compose.yml` and **uncomment the `ngrok:` service block** (located under the `# Option 1: ngrok` header — it ships commented out in this repo).
-4. Start the tunnel container using the tunnel profile:
-   ```bash
+```
+1. Open `docker-compose.yml` and **uncomment the **`ngrok:`** service block** (located under the `# Option 1: ngrok` header — it ships commented out in this repo).
+2. Start the tunnel container using the tunnel profile:
+```bash
    docker compose --profile tunnel up -d
-   ```
-   (Plain `docker compose up -d` skips the tunnel — local-only testing.)
-5. View the public URL printed in the ngrok container logs:
-   ```bash
+```
+(Plain `docker compose up -d` skips the tunnel — local-only testing.)
+1. View the public URL printed in the ngrok container logs:
+```bash
    docker compose logs ngrok
-   ```
-   (Look for the line containing `url=https://<random-id>.ngrok-free.app`).
-6. Set your GitHub App's **Webhook URL** (in your app's General settings) to:
-   ```
+```
+(Look for the line containing `url=https://<random-id>.ngrok-free.app`).
+1. Set your GitHub App's **Webhook URL** (in your app's General settings) to:
+```
    https://<random-id>.ngrok-free.app/webhooks/github
-   ```
-7. *Tip*: You can view live incoming webhook payloads using ngrok's web inspection dashboard at `http://localhost:4040`.
+```
+1. *Tip*: You can view live incoming webhook payloads using ngrok's web inspection dashboard at `http://localhost:4040`.
 
 Free tier gives a random URL each restart — reserve a domain (paid plan) via `NGROK_DOMAIN` for a stable URL.
 
@@ -287,7 +338,7 @@ Free tier gives a random URL each restart — reserve a domain (paid plan) via `
 3. Uncomment the `tailscale:` service block in `docker-compose.yml`.
 4. Start with: `docker compose --profile tunnel up -d`.
 5. Enable HTTPS + Funnel in the Tailscale admin console and set your Webhook URL to:
-   `https://<machine>.<tailnet>.ts.net/webhooks/github`.
+`https://<machine>.<tailnet>.ts.net/webhooks/github`.
 
 #### Path B — hosted server / your own tunnel (production)
 
@@ -295,9 +346,9 @@ Use this when you **already have** a public server or run ngrok on the host — 
 
 1. Leave `NGROK_AUTHTOKEN` blank and start **without** the tunnel profile: `docker compose up -d` (keep the `ngrok:` / `tailscale:` blocks commented out so they can never start by accident).
 2. Point your existing public endpoint at the app's port 3200:
-   - **Reverse proxy with SSL (recommended for production):** Caddy / nginx / Traefik with a valid certificate → `https://lazydev.your-domain.com/webhooks/github`.
-   - **Host-level ngrok:** `https://<host-ngrok-url>/webhooks/github`.
-   - **Direct public IP (quick & dirty):** `http://<your-server-ip>:3200/webhooks/github` (GitHub allows plain HTTP, but payloads travel unencrypted).
+- **Reverse proxy with SSL (recommended for production):** Caddy / nginx / Traefik with a valid certificate → `https://lazydev.your-domain.com/webhooks/github`.
+- **Host-level ngrok:** `https://<host-ngrok-url>/webhooks/github`.
+- **Direct public IP (quick & dirty):** `http://<your-server-ip>:3200/webhooks/github` (GitHub allows plain HTTP, but payloads travel unencrypted).
 
 Rule of thumb: **Path A = "Docker gives me the public URL." Path B = "I already have a public URL; Docker stays out of the way."**
 
@@ -315,6 +366,8 @@ npm run start:dev
 
 For local development, set the infrastructure connection variables in `.env` to `localhost` (`DB_HOST=localhost`, `REDIS_HOST=localhost`).
 
+Two gotchas: `GITHUB_WEBHOOK_SECRET` is still required (the app exits on boot without it, even locally), and if `.env` sets `REDIS_PASSWORD`, start Redis via compose (it applies the password for you) — a hand-started Redis without the password will give you `NOAUTH` errors.
+
 ---
 
 ## 7. MCP server (Hermes / OpenClaw / Claude Desktop)
@@ -324,7 +377,7 @@ LazyDev exposes itself as an **MCP server** over Streamable HTTP, allowing MCP-c
 ### Tools exposed
 
 | Tool | Purpose |
-|---|---|
+| --- | --- |
 | `trigger_issue_fix(repository, issue_number, priority?)` | Fix an existing GitHub issue. `priority: "urgent"` jumps the queue. |
 | `implement_new_feature(repository, feature_description)` | Write net-new code from a prompt. Creates a tracking issue (labelled `enhancement`, `lazydev`). |
 | `get_pipeline_status(task_id)` | Check whether a run is queued, running, failed, or succeeded. |
@@ -396,11 +449,11 @@ chat. (For two-way steering from chat, use the MCP tools in §7 instead.)
 1. Discord channel → **Edit Channel → Integrations → Webhooks → New Webhook**.
 2. Copy the webhook URL.
 3. Paste it into `.env` (see `.env.example` §5):
-   ```env
+```env
    DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-   ```
-4. Restart the app (`docker compose up -d`). The next CI result on a
-   `lazydev/fix-*` branch arrives as a rich embed.
+```
+1. Restart the app (`docker compose up -d`). The next CI result on a
+`lazydev/fix-*` branch arrives as a rich embed.
 
 ### Slack / Telegram / other social gateways (via bridge)
 
@@ -408,20 +461,20 @@ Only `DISCORD_WEBHOOK_URL` is read natively today. To reach other chats,
 forward the payload through a gateway — pick one:
 
 - **Slack Incoming Webhook + bridge:** create a Slack Incoming Webhook, then
-  add a tiny bridge (n8n / Make / Zapier / a ~20-line Cloudflare Worker) that
-  reshapes the Discord embed JSON into Slack blocks.
+add a tiny bridge (n8n / Make / Zapier / a \~20-line Cloudflare Worker) that
+reshapes the Discord embed JSON into Slack blocks.
 - **n8n / Make fan-out (recommended for teams):** one HTTP-webhook scenario
-  receives the event and forwards to Discord **and** Slack **and** Telegram
-  at once. Set the scenario's URL as `GENERIC_NOTIFICATION_WEBHOOK_URL` in
-  `.env` (reserved placeholder, `.env.example` §5) so the wiring is
-  documented even before native support lands.
+receives the event and forwards to Discord **and** Slack **and** Telegram
+at once. Set the scenario's URL as `GENERIC_NOTIFICATION_WEBHOOK_URL` in
+`.env` (reserved placeholder, `.env.example` §5) so the wiring is
+documented even before native support lands.
 - **Telegram via gateway:** create a bot with BotFather, get the chat ID,
-  and let the same n8n/Make scenario deliver via the Telegram Bot API
-  (`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` placeholders in `.env.example`
-  §5 are reserved for this).
+and let the same n8n/Make scenario deliver via the Telegram Bot API
+(`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` placeholders in `.env.example`
+§5 are reserved for this).
 - **WhatsApp via Hermes:** run the Hermes WhatsApp bridge on your laptop and
-  ask it for status — no webhook URL needed (see §7 "Why run Hermes on your
-  laptop").
+ask it for status — no webhook URL needed (see §7 "Why run Hermes on your
+laptop").
 
 > Leave `DISCORD_WEBHOOK_URL` blank to silence notifications entirely — the
 > server logs a warning and continues.
@@ -433,7 +486,7 @@ forward the payload through a gateway — pick one:
 The app exposes `/metrics` (Prometheus format) via `@willsoto/nestjs-prometheus`. `docker-compose.yml` provides optional Prometheus and Grafana containers.
 
 | Dashboard | URL | Default login |
-|---|---|---|
+| --- | --- | --- |
 | NestJS API | http://localhost:3200 | — |
 | pgAdmin (optional) | http://localhost:5050 | `admin@lazydev.com` / `admin` |
 | RedisInsight (optional) | http://localhost:8001 | — |
@@ -444,7 +497,7 @@ The app exposes `/metrics` (Prometheus format) via `@willsoto/nestjs-prometheus`
 
 ## 10. Connecting the frontend client dashboard
 
-The dashboard UI lives in the [`lazydev-client`](https://github.com/FutureMindsDev/lazydev-client) repository — a Next.js 16 application that interfaces with this backend's `/api/dashboard/*` endpoints.
+The dashboard UI lives in the [\`lazydev-client\`](https://github.com/FutureMindsDev/lazydev-client) repository — a Next.js 16 application that interfaces with this backend's `/api/dashboard/*` endpoints.
 
 ### Backend configuration
 
@@ -467,7 +520,7 @@ docker compose up -d --build      # API running on http://localhost:3200
 
 ### Frontend setup
 
-Clone [`lazydev-client`](https://github.com/FutureMindsDev/lazydev-client) next to this repo:
+Clone [\`lazydev-client\`](https://github.com/FutureMindsDev/lazydev-client) next to this repo:
 
 ```bash
 git clone https://github.com/FutureMindsDev/lazydev-client.git
@@ -492,7 +545,7 @@ Start the dashboard:
 pnpm dev      # http://localhost:3000
 ```
 
-Open `http://localhost:3000` to view real-time pipeline runs, queue states, repository indexing, and dynamic LLM provider settings. See the client repo's [`BACKEND_API_SPEC.md`](https://github.com/FutureMindsDev/lazydev-client/blob/main/BACKEND_API_SPEC.md) for full API contracts.
+Open `http://localhost:3000` to view real-time pipeline runs, queue states, repository indexing, and dynamic LLM provider settings. See the client repo's [\`BACKEND\_API\_SPEC.md\`](https://github.com/FutureMindsDev/lazydev-client/blob/main/BACKEND_API_SPEC.md) for full API contracts.
 
 ---
 
@@ -508,13 +561,14 @@ Open `http://localhost:3000` to view real-time pipeline runs, queue states, repo
 ## 12. Features
 
 - **GitHub App Authentication**: JWT + Installation Token auth.
-- **Secure Webhooks**: HMAC-SHA256 signature verification with delivery-ID deduplication.
+- **Secure Webhooks**: HMAC-SHA256 signature verification with delivery-ID deduplication. Fail-closed: the app refuses to start without `GITHUB_WEBHOOK_SECRET`.
 - **Asynchronous Ingestion**: BullMQ + Redis queue with exponential backoff retries.
 - **Distributed Locking**: Redis Redlock prevents concurrent execution anomalies per repo and branch.
 - **Multi-Agent Orchestration**: LangGraph AI pipeline — Onboarding → Planner → PatchGenerator → ValidationAgent → GitAgent.
 - **Dynamic Provider Configuration**: Configure LLM providers via backend `.env` or client dashboard UI with AES-256-GCM encryption.
 - **Per-Agent Model Selection**: Assign custom providers and models to individual agents.
-- **Sandbox Validation**: Fixes verified with `npm run build` inside isolated Docker containers.
+- **Sandbox Validation**: Fixes verified with `npm run build` inside isolated Docker containers (spawned via argv with no shell, strict flag checks, unprivileged `node` user, dropped capabilities, 10-minute kill). The app reaches Docker only through a socket-proxy sidecar — never the raw host socket.
+- **Rate Limiting**: Throttler guard enforced on every route (100 requests/minute) against DoS / LLM-burn.
 - **Cross-Platform Sandbox**: Named Docker volume for worktrees ensures cross-platform reliability.
 - **Self-Healing Loop**: Automatically retries patch generation incorporating validation feedback.
 - **MCP Server (Hermes / OpenClaw)**: Exposes 6 orchestration tools over Streamable HTTP (trigger fix, new feature, pipeline status, human feedback, repo list, repo health).
@@ -524,4 +578,4 @@ Open `http://localhost:3000` to view real-time pipeline runs, queue states, repo
 
 ## 13. License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT — see [\`LICENSE\`](./LICENSE).

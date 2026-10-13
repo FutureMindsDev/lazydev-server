@@ -31,10 +31,15 @@ export class WebhooksService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    const secret = this.configService.get<string>('GITHUB_WEBHOOK_SECRET', '');
+    const rawSecret = this.configService.get<string>('GITHUB_WEBHOOK_SECRET');
+    // Trim it: a secret of only spaces is the same as no secret at all.
+    // Fail closed: without a real secret anyone could forge webhooks and
+    // queue free jobs (which spend your LLM money). Never fall back to a
+    // default secret.
+    const secret = rawSecret?.trim() ?? '';
     if (!secret) {
-      this.logger.warn(
-        'GITHUB_WEBHOOK_SECRET is missing. Webhooks cannot be verified securely.',
+      throw new Error(
+        'GITHUB_WEBHOOK_SECRET is missing or empty. Set it in .env to match your GitHub App webhook secret.',
       );
     }
 
@@ -42,7 +47,7 @@ export class WebhooksService implements OnModuleInit {
     const WebhooksClass = webhooksModule.Webhooks;
 
     this.webhooks = new WebhooksClass({
-      secret: secret || 'default_secret',
+      secret,
     });
 
     this.setupHandlers();

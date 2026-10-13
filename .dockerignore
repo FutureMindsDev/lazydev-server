@@ -1,0 +1,28 @@
+# Never send host dependencies into the build context. The image rebuilds
+# its own Linux/npm layout with `npm ci` in the deps stage; copying the
+# host's node_modules over it slows the build and can break native modules.
+node_modules
+
+# Build outputs / local state
+dist
+coverage
+
+# Git / env (compose injects .env via env_file, not COPY)
+.git
+.gitignore
+.env
+.env.*
+*.pem
+*.log
+log-*.txt
+logs-*.txt
+
+# Runtime / cache dirs
+repo-cache/
+worktrees/
+tmp_git_home/
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store
