@@ -164,8 +164,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: lazydev-redis
-    # Empty REDIS_PASSWORD = plain dev server. Set a password in .env and all
-    # four app clients (BullMQ, locks, feedback, SSE events) send it.
+    # Empty REDIS_PASSWORD = plain dev server. Set a password in .env and
+    # every app client (BullMQ, locks, feedback, SSE events, requeue
+    # counter, decision flags) sends it.
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     command:
