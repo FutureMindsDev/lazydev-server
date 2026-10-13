@@ -22,6 +22,8 @@ import { GitModule } from '../git/git.module';
 import { LockModule } from '../locks/lock.module';
 import { OrchestrationModule } from '../orchestration/orchestration.module';
 import { IntelligenceModule } from '../intelligence/intelligence.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { DecisionModule } from '../decision/decision.module';
 
 @Module({
   imports: [
@@ -44,6 +46,12 @@ import { IntelligenceModule } from '../intelligence/intelligence.module';
     LockModule,
     OrchestrationModule,
     IntelligenceModule,
+    // Prompt-guard block alerts (Layer 0). No cycle: NotificationsModule
+    // only depends on HttpModule.
+    NotificationsModule,
+    // Layer-1 Clef screening at ingestion. No cycle: DecisionModule
+    // imports nothing.
+    DecisionModule,
   ],
   providers: [IngestionService, IssueProcessor, AuditLogBackfillService],
   exports: [IngestionService],
