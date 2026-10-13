@@ -12,7 +12,6 @@
  * See LICENSE file in the project root for full license information.
  */
 
-/* eslint-disable */
 /**
  * Shared shapes for System One decision providers (Clef, Jev, Llama-style
  * local models, or a plain LLM asked for JSON as fallback).
