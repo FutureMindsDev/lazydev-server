@@ -21,6 +21,17 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
+  // Fail closed before booting: a missing webhook secret means anyone could
+  // forge GitHub webhooks and queue free jobs (LLM spend). Whitespace counts
+  // as missing.
+  const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET?.trim() ?? '';
+  if (!webhookSecret) {
+    console.error(
+      'FATAL: GITHUB_WEBHOOK_SECRET is missing or empty. Set it in .env to match your GitHub App webhook secret. Refusing to start.',
+    );
+    process.exit(1);
+  }
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
   });

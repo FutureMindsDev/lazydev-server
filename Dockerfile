@@ -24,10 +24,12 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Copy only production dependencies and built files
+# NOTE: never COPY *.pem into the image. The GitHub App private key is passed
+# as the GITHUB_PRIVATE_KEY env value at runtime — baking a key file into the
+# image would leak it to anyone who pulls the image.
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/*.pem ./
 
 # Create necessary directories for local caching and sandbox execution
 RUN mkdir -p /app/repositories /app/data

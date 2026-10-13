@@ -15,8 +15,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { App } from 'octokit';
-import * as fs from 'fs';
-import * as path from 'path';
 
 @Injectable()
 export class GithubService implements OnModuleInit {
@@ -31,22 +29,10 @@ export class GithubService implements OnModuleInit {
 
   private async initialize() {
     const appId = this.configService.get<string>('GITHUB_APP_ID');
-    let privateKey = this.configService.get<string>('GITHUB_PRIVATE_KEY');
-
-    // Support picking up the private key from a file path
-    const privateKeyPath = this.configService.get<string>(
-      'GITHUB_PRIVATE_KEY_PATH',
-    );
-    if (!privateKey && privateKeyPath) {
-      try {
-        privateKey = fs.readFileSync(
-          path.resolve(process.cwd(), privateKeyPath),
-          'utf8',
-        );
-      } catch {
-        this.logger.error(`Could not read private key from ${privateKeyPath}`);
-      }
-    }
+    // Env value only: GITHUB_PRIVATE_KEY holds the full key text (real
+    // newlines, quoted in .env). No file-path mode — never bake *.pem files
+    // into the Docker image.
+    const privateKey = this.configService.get<string>('GITHUB_PRIVATE_KEY');
 
     if (!appId || !privateKey) {
       this.logger.warn(

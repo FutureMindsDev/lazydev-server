@@ -13,10 +13,11 @@
  */
 
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -83,6 +84,10 @@ import { McpServerModule } from './mcp-server/mcp-server.module';
         connection: {
           host: configService.get<string>('REDIS_HOST', 'localhost'),
           port: configService.get<number>('REDIS_PORT', 6379),
+          // Empty REDIS_PASSWORD (local dev) = no password sent. Set it and
+          // every client sends it — avoids NOAUTH outages where the server
+          // requires a password but a client forgot to send one.
+          password: configService.get<string>('REDIS_PASSWORD') || undefined,
         },
       }),
     }),
@@ -99,6 +104,12 @@ import { McpServerModule } from './mcp-server/mcp-server.module';
     PrometheusModule.register(),
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // Rate limiting is the ONLY guard here (there is no auth system in this
+    // repo). It must be registered or the ThrottlerModule above never blocks
+    // anything — public routes (webhooks, MCP) need DoS / LLM-burn cover.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule {}

@@ -39,10 +39,13 @@ import type { PipelineEvent } from '../dashboard.dto';
 export class EventsController {
   private readonly redisHost: string;
   private readonly redisPort: number;
+  private readonly redisPassword?: string;
 
   constructor(private readonly configService: ConfigService) {
     this.redisHost = this.configService.get<string>('REDIS_HOST', 'localhost');
     this.redisPort = this.configService.get<number>('REDIS_PORT', 6379);
+    this.redisPassword =
+      this.configService.get<string>('REDIS_PASSWORD') || undefined;
   }
 
   @Sse('events')
@@ -56,6 +59,7 @@ export class EventsController {
       const sub = new Redis({
         host: this.redisHost,
         port: this.redisPort,
+        password: this.redisPassword,
         maxRetriesPerRequest: null,
       });
 
