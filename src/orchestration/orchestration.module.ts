@@ -19,7 +19,10 @@ import { GitModule } from '../git/git.module';
 import { ValidationModule } from '../validation/validation.module';
 import { GithubModule } from '../github/github.module';
 import { HumanFeedbackModule } from '../feedback/human-feedback.module';
+import { DecisionModule } from '../decision/decision.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { OrchestrationService } from './orchestration.service';
+import { PipelineGatesService } from './pipeline-gates.service';
 import { LlmService } from './llm.service';
 import { OnboardingAgent } from './agents/onboarding.agent';
 import { PlannerAgent } from './agents/planner.agent';
@@ -42,10 +45,15 @@ import { LlmProviderConfigService } from './llm-provider-config.service';
     ValidationModule,
     GithubModule,
     HumanFeedbackModule,
+    // Gates A/B need decisions + quarantine alerts (no cycles: Decision
+    // imports nothing, Notifications only needs HttpModule).
+    DecisionModule,
+    NotificationsModule,
     TypeOrmModule.forFeature([AuditLog, LlmConfig, LlmProviderConfig]),
   ],
   providers: [
     OrchestrationService,
+    PipelineGatesService,
     LlmService,
     LlmConfigService,
     LlmProviderConfigService,

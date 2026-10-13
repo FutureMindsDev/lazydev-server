@@ -102,7 +102,12 @@ export class RepositoryCacheService {
         );
         await git.remote(['set-url', 'origin', freshCloneUrl]);
 
-        await git.fetch(['--all', '--prune']);
+        try {
+          await git.fetch(['--all', '--prune']);
+        } finally {
+          // Token did its job — scrub it from .git/config even if fetch threw.
+          await this.scrubRemoteToken(git, owner, repo);
+        }
         cacheEntry.lastFetchedAt = new Date();
         await this.repoCacheRepo.save(cacheEntry);
         this.logger.log(`Fetched latest refs for ${fullName}`);
@@ -126,25 +131,30 @@ export class RepositoryCacheService {
       );
       await existingGit.remote(['set-url', 'origin', freshCloneUrl]);
 
-      await existingGit.fetch(['--all', '--prune']);
+      try {
+        await existingGit.fetch(['--all', '--prune']);
 
-      const remoteInfo = await existingGit.remote(['show', 'origin']);
-      const defaultBranchMatch = remoteInfo
-        ?.toString()
-        .match(/HEAD branch: (.+)/);
-      const defaultBranch = defaultBranchMatch
-        ? defaultBranchMatch[1].trim()
-        : this.configService.get<string>('LAZYDEV_DEFAULT_BRANCH', 'main');
+        const remoteInfo = await existingGit.remote(['show', 'origin']);
+        const defaultBranchMatch = remoteInfo
+          ?.toString()
+          .match(/HEAD branch: (.+)/);
+        const defaultBranch = defaultBranchMatch
+          ? defaultBranchMatch[1].trim()
+          : this.configService.get<string>('LAZYDEV_DEFAULT_BRANCH', 'main');
 
-      cacheEntry = this.repoCacheRepo.create({
-        owner,
-        repo,
-        fullName,
-        localPath,
-        defaultBranch,
-        lastFetchedAt: new Date(),
-      });
-      await this.repoCacheRepo.save(cacheEntry);
+        cacheEntry = this.repoCacheRepo.create({
+          owner,
+          repo,
+          fullName,
+          localPath,
+          defaultBranch,
+          lastFetchedAt: new Date(),
+        });
+        await this.repoCacheRepo.save(cacheEntry);
+      } finally {
+        // remote show is done — the token URL is no longer needed.
+        await this.scrubRemoteToken(existingGit, owner, repo);
+      }
       this.logger.log(`Re-hydrated cache entry for ${fullName}`);
     } else {
       // Cache miss: clone the repository. This branch also handles the
@@ -172,9 +182,13 @@ export class RepositoryCacheService {
       await git.clone(cloneUrl, localPath, ['--no-single-branch']);
       this.logger.log(`Cloned ${fullName} to ${localPath}`);
 
-      // Get the default branch from the cloned repo
+      // Get the default branch from the cloned repo. Git saved the token
+      // URL into the fresh clone's .git/config — scrub it now that the
+      // clone (and the remote show below) is done. remote show still needs
+      // the token, so scrub AFTER it.
       const clonedGit: SimpleGit = simpleGit(localPath);
       const remoteInfo = await clonedGit.remote(['show', 'origin']);
+      await this.scrubRemoteToken(clonedGit, owner, repo);
       const defaultBranchMatch = remoteInfo
         ?.toString()
         .match(/HEAD branch: (.+)/);
@@ -259,5 +273,33 @@ export class RepositoryCacheService {
     });
 
     return `https://x-access-token:${data.token}@github.com/${owner}/${repo}.git`;
+  }
+
+  /**
+   * Scrub the install token out of a clone's `.git/config`.
+   *
+   * Simple story: git saves whatever URL we give it. We must give it a URL
+   * WITH the token to clone/fetch — but afterwards that token sits on disk
+   * in `.git/config`, where anyone who can read the volume can steal it and
+   * push code as us. So right after every authenticated operation we swap
+   * the URL back to the plain public one (same repo, no secret).
+   * Never throws — a scrub failure is logged, never job-fatal.
+   */
+  private async scrubRemoteToken(
+    git: SimpleGit,
+    owner: string,
+    repo: string,
+  ): Promise<void> {
+    try {
+      await git.remote([
+        'set-url',
+        'origin',
+        `https://github.com/${owner}/${repo}.git`,
+      ]);
+    } catch (e) {
+      this.logger.warn(
+        `Could not scrub install token from ${owner}/${repo} remote URL: ${(e as Error).message}`,
+      );
+    }
   }
 }

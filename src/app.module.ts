@@ -70,9 +70,11 @@ import { McpServerModule } from './mcp-server/mcp-server.module';
         password: configService.get<string>('DB_PASSWORD', 'postgres'),
         database: configService.get<string>('DB_NAME', 'lazy_issue_resolver'),
         autoLoadEntities: true,
-        // Keep synchronize enabled so TypeORM auto-creates/updates tables on
-        // startup. Formal migrations can replace this when the schema stabilises.
-        synchronize: true,
+        // Never auto-migrate production: synchronize lets the app
+        // create or alter tables on every restart, so one bad entity
+        // change could eat real data. Local dev keeps it on for speed.
+        synchronize:
+          configService.get<string>('NODE_ENV', 'development') !== 'production',
       }),
     }),
 

@@ -31,8 +31,10 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
-# Create necessary directories for local caching and sandbox execution
-RUN mkdir -p /app/repositories /app/data
+# Create the mount points for the named volumes BEFORE the chown below, so
+# fresh volumes inherit node ownership (old root-owned volumes need a
+# one-time chown — see README §5).
+RUN mkdir -p /app/repo-cache /app/worktrees
 
 # Ensure the app runs with appropriate permissions
 RUN chown -R node:node /app

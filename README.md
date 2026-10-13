@@ -571,6 +571,8 @@ Open `http://localhost:3000` to view real-time pipeline runs, queue states, repo
 - **Rate Limiting**: Throttler guard enforced on every route (100 requests/minute) against DoS / LLM-burn.
 - **Cross-Platform Sandbox**: Named Docker volume for worktrees ensures cross-platform reliability.
 - **Self-Healing Loop**: Automatically retries patch generation incorporating validation feedback.
+- **Prompt Guard (Layer 0)**: Every issue is screened for prompt-injection before it is queued (MCP-created issues take a light path). Blocked issues alert Discord. Secrets are masked before anything is logged or forwarded.
+- **Decision Gates (System One)**: Optional Clef/Jev/LLM-judge layer — triage gate before planning, patch-safety gate before validation, failure classification inside validation. Free-first fallback: nothing here can surprise you with an LLM bill. See `.env.example` §7b.
 - **MCP Server (Hermes / OpenClaw)**: Exposes 6 orchestration tools over Streamable HTTP (trigger fix, new feature, pipeline status, human feedback, repo list, repo health).
 - **Notifications**: Discord webhook integration for pipeline status alerts (Slack/Telegram via gateway bridge — no AI agent required).
 

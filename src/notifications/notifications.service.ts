@@ -17,6 +17,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { maskSecrets } from '../common/prompt-guard';
 
 export interface NotificationPayload {
   title: string;
@@ -44,22 +45,43 @@ export class NotificationsService {
       return;
     }
 
+    // Fail closed on a misconfigured URL: secrets must only ever go to
+    // Discord's real webhook endpoint, never an attacker's lookalike.
+    if (!webhookUrl.startsWith('https://discord.com/api/webhooks/')) {
+      this.logger.error(
+        'DISCORD_WEBHOOK_URL does not start with https://discord.com/api/webhooks/ — refusing to send.',
+      );
+      return;
+    }
+
+    // Sink-side masking: scrub secret-looking values from everything we
+    // forward, so a leaked token in a log line or payload can never reach
+    // Discord even if a caller forgot to clean first.
+    const safe = {
+      title: maskSecrets(payload.title),
+      description: maskSecrets(payload.description),
+      fields: (payload.fields || []).map((f) => ({
+        ...f,
+        value: maskSecrets(f.value),
+      })),
+    };
+
     try {
       await firstValueFrom(
         this.httpService.post(webhookUrl, {
           embeds: [
             {
-              title: payload.title,
-              description: payload.description,
+              title: safe.title,
+              description: safe.description,
               color: payload.color || 3447003, // Default blue
-              fields: payload.fields || [],
+              fields: safe.fields,
               timestamp: new Date().toISOString(),
             },
           ],
         }),
       );
       this.logger.log(
-        `Successfully sent Discord notification: ${payload.title}`,
+        `Successfully sent Discord notification: ${safe.title}`,
       );
     } catch (e: any) {
       this.logger.error(`Failed to send Discord notification: ${e.message}`);
