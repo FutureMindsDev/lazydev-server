@@ -21,6 +21,7 @@ import { HumanFeedbackModule } from '../feedback/human-feedback.module';
 import { RepositoryCacheModule } from '../repository/repository-cache.module';
 import { IntelligenceModule } from '../intelligence/intelligence.module';
 import { RepositoryCache } from '../repository/entities/repository-cache.entity';
+import { DecisionModule } from '../decision/decision.module';
 import { DashboardService } from './dashboard.service';
 import { MetaController } from './controllers/meta.controller';
 import { RunsController } from './controllers/runs.controller';
@@ -36,6 +37,7 @@ import { MetricsController } from './controllers/metrics.controller';
     HumanFeedbackModule, // HumanFeedbackService
     RepositoryCacheModule, // RepositoryCacheService + RepositoryCache entity
     IntelligenceModule, // VectorDbService (Qdrant stats)
+    DecisionModule, // DecisionProviderService (prompt guard status/toggle)
     TypeOrmModule.forFeature([RepositoryCache]), // direct repo lookup for stats/resync
     BullModule.registerQueue({ name: 'issue-processing' }),
   ],

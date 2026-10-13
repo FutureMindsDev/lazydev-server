@@ -1,1 +1,8 @@
-echo "Test pre-commit"
+# Secret scan on staged changes. Install once with: brew install gitleaks
+# (or download from https://github.com/gitleaks/gitleaks). Skips silently
+# on machines without the binary so commits are never blocked by a missing tool.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --verbose --redact
+else
+  echo "gitleaks not installed — skipping secret scan (brew install gitleaks)"
+fi

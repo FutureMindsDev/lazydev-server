@@ -16,6 +16,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { OrchestrationService } from './orchestration.service';
 import { AuditLogService } from './audit-log.service';
 import { HumanFeedbackService } from '../feedback/human-feedback.service';
+import { PipelineGatesService } from './pipeline-gates.service';
 import { OnboardingAgent } from './agents/onboarding.agent';
 import { PlannerAgent } from './agents/planner.agent';
 import { PatchGeneratorAgent } from './agents/patch-generator.agent';
@@ -26,6 +27,26 @@ import type { AgentState } from './graph.state';
 /** Reads a recorded mock call as a typed tuple (jest.Mock defaults to `any`). */
 const nthCall = <T extends unknown[]>(mock: jest.Mock, n: number): T =>
   mock.mock.calls[n] as T;
+
+/** Pass-through gates: triage always routes to planner, patch gate always
+ *  validates as low risk. Gate behavior itself is covered in
+ *  pipeline-gates.service.spec.ts; here the graph shape is what's tested. */
+const passThroughGates = () => ({
+  triageNode: jest.fn().mockImplementation(() =>
+    Promise.resolve({
+      triageVerdict: { route: 'planner', source: 'test' },
+    }),
+  ),
+  patchGateNode: jest
+    .fn()
+    .mockImplementation((state: { patchGateAttempts?: number }) =>
+      Promise.resolve({
+        patchRisk: 'low',
+        patchGateAttempts: (state?.patchGateAttempts || 0) + 1,
+        patchGateDecision: 'validate',
+      }),
+    ),
+});
 
 /**
  * Covers the MCP human-feedback path through the compiled LangGraph: feedback
@@ -82,6 +103,7 @@ describe('OrchestrationService — human feedback integration', () => {
           },
         },
         { provide: HumanFeedbackService, useValue: feedbackService },
+        { provide: PipelineGatesService, useValue: passThroughGates() },
       ],
     }).compile();
 
@@ -181,6 +203,7 @@ describe('OrchestrationService — audit log on pipeline exception', () => {
           provide: HumanFeedbackService,
           useValue: { consume: jest.fn().mockResolvedValue(null) },
         },
+        { provide: PipelineGatesService, useValue: passThroughGates() },
       ],
     }).compile();
 
@@ -211,6 +234,7 @@ describe('OrchestrationService — audit log on pipeline exception', () => {
           provide: HumanFeedbackService,
           useValue: { consume: jest.fn().mockResolvedValue(null) },
         },
+        { provide: PipelineGatesService, useValue: passThroughGates() },
       ],
     }).compile();
 
@@ -256,6 +280,7 @@ describe('OrchestrationService — audit log on pipeline exception', () => {
           provide: HumanFeedbackService,
           useValue: { consume: jest.fn().mockResolvedValue(null) },
         },
+        { provide: PipelineGatesService, useValue: passThroughGates() },
       ],
     }).compile();
 

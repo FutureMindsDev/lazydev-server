@@ -15,14 +15,22 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Webhooks } from '@octokit/webhooks';
+import Redis from 'ioredis';
 import { IngestionService } from '../ingestion/ingestion.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { MCP_ISSUE_MARKER } from '../mcp-server/mcp.constants';
+
+/** Max CI-failure auto-requeues per branch per day. Without a cap, a repo
+ *  whose CI always fails becomes an infinite job loop (infinite LLM bill). */
+const MAX_CI_REQUEUES = 3;
+/** Counter lifetime: one day. A branch that goes green resets sooner. */
+const REQUEUE_WINDOW_SECONDS = 86_400;
 
 @Injectable()
 export class WebhooksService implements OnModuleInit {
   private readonly logger = new Logger(WebhooksService.name);
   public webhooks: Webhooks;
+  private redis: Redis;
 
   constructor(
     private configService: ConfigService,
@@ -50,7 +58,47 @@ export class WebhooksService implements OnModuleInit {
       secret,
     });
 
+    // Dedicated lightweight client for the CI-requeue counter (same
+    // password rules as every other Redis client — empty means none).
+    this.redis = new Redis({
+      host: this.configService.get<string>('REDIS_HOST', 'localhost'),
+      port: this.configService.get<number>('REDIS_PORT', 6379),
+      password: this.configService.get<string>('REDIS_PASSWORD') || undefined,
+      // Never hold boot hostage on a sick Redis; webhook handlers
+      // fail-open to the old behavior (see below) instead.
+      maxRetriesPerRequest: 2,
+    });
+    this.redis.on('error', (err: Error) => {
+      this.logger.warn(`Requeue-counter Redis error: ${err.message}`);
+    });
+
     this.setupHandlers();
+  }
+
+  /**
+   * Count this CI failure for the branch (1 = first failure). Returns a
+   * number over MAX_CI_REQUEUES when the budget is spent. On any Redis
+   * trouble, returns 1 (fail OPEN to the old always-requeue behavior —
+   * a stuck webhook pipeline is worse than an extra retry).
+   */
+  private async countCiRequeue(branchName: string): Promise<number> {
+    try {
+      const key = `requeue:${branchName}`;
+      const count = await this.redis.incr(key);
+      if (count === 1) await this.redis.expire(key, REQUEUE_WINDOW_SECONDS);
+      return count;
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn(
+        `Could not count CI requeue for ${branchName}: ${msg}. Allowing retry (fail-open).`,
+      );
+      return 1;
+    }
+  }
+
+  /** Clear the failure counter (called when CI goes green). */
+  private async resetCiRequeueCount(branchName: string): Promise<void> {
+    await this.redis.del(`requeue:${branchName}`);
   }
 
   private setupHandlers() {
@@ -97,13 +145,30 @@ export class WebhooksService implements OnModuleInit {
           color,
         });
 
+        if (status === 'success') {
+          // Green again — reset the failure counter for this branch.
+          await this.resetCiRequeueCount(branchName).catch(() => undefined);
+        }
+
         if (
           status === 'failure' ||
           status === 'timed_out' ||
           status === 'action_required'
         ) {
+          const attempt = await this.countCiRequeue(branchName);
+          if (attempt > MAX_CI_REQUEUES) {
+            this.logger.warn(
+              `CI failed for ${branchName} (${attempt - 1} auto-retries already used). Stopping — needs a human.`,
+            );
+            await this.notificationsService.sendDiscordNotification({
+              title: `Auto-retry stopped for Issue #${issueNumber}`,
+              description: `CI on \`${branchName}\` failed ${attempt - 1} times in 24h. LazyDev will NOT re-queue again — a human needs to look at it.\n[View CI Logs](${payload.check_run.html_url})`,
+              color: 15158332,
+            });
+            return;
+          }
           this.logger.warn(
-            `CI failed for ${branchName}. Re-queueing issue #${issueNumber} for self-healing.`,
+            `CI failed for ${branchName}. Re-queueing issue #${issueNumber} for self-healing (auto-retry ${attempt}/${MAX_CI_REQUEUES}).`,
           );
           // Re-queue the issue to trigger another orchestration pipeline
           await this.ingestionService.queueIssueEvent({

@@ -20,6 +20,12 @@ import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { SerenaMcpService } from '../../intelligence/serena-mcp.service';
 import { LlmService } from '../llm.service';
 import { extractMcpText } from '../../common/mcp-text';
+import { DecisionProviderService } from '../../decision/decision-provider.service';
+import {
+  FailureClass,
+  ValidationAction,
+  ValidationDecision,
+} from '../../decision/decision.dto';
 
 @Injectable()
 export class ValidationAgent {
@@ -29,6 +35,7 @@ export class ValidationAgent {
     private readonly validationService: ValidationService,
     private readonly serenaMcp: SerenaMcpService,
     private readonly llmService: LlmService,
+    private readonly decision: DecisionProviderService,
   ) {}
 
   async invoke(state: AgentState): Promise<Partial<AgentState>> {
@@ -85,10 +92,43 @@ export class ValidationAgent {
       } else {
         const feedback = result.stderr || result.stdout || 'Unknown validation error.';
         this.logger.warn(`Validation failed (language: ${result.language}): ${feedback}`);
+        // Gate C: classify the failure BEFORE deciding the retry, so an
+        // environment problem never blames the patch (and vice versa).
+        const gate = await this.classifyFailure(feedback, String(result.language), attempts);
+        if (gate.action === 'accept') {
+          this.logger.log(
+            `Gate C accepted the run despite validation output (class=${gate.failureClass}). Marking valid.`,
+          );
+          return {
+            isValid: true,
+            validationFeedback: `Accepted by Gate C (${gate.failureClass}):\n${feedback}`,
+            validationAttempts: attempts,
+            messages: [new SystemMessage('Validation accepted by Gate C.')],
+          };
+        }
+        if (gate.action === 'request_human_review' || gate.action === 'abort') {
+          const reason =
+            gate.action === 'abort'
+              ? `Gate C aborted the run (class=${gate.failureClass})`
+              : `Gate C asked for human review (class=${gate.failureClass})`;
+          this.logger.warn(reason);
+          return {
+            isValid: false,
+            validationFeedback: `${reason}:\n${feedback}`,
+            validationAttempts: attempts,
+            abortReason: reason,
+            messages: [new SystemMessage(`Validation stopped:\n${feedback}`)],
+          };
+        }
+        const extra =
+          gate.action === 'retry_with_more_context'
+            ? '\n(Gate C suggests retrying with broader repo context.)'
+            : '';
         return {
           isValid: false,
-          validationFeedback: feedback,
+          validationFeedback: feedback + extra,
           validationAttempts: attempts,
+          validationMaxAttempts: attempts + gate.maxAdditionalAttempts,
           messages: [new SystemMessage(`Validation failed:\n${feedback}`)],
         };
       }
@@ -100,6 +140,84 @@ export class ValidationAgent {
         validationAttempts: attempts,
         messages: [new SystemMessage(`Validation failed:\n${e.message}`)],
       };
+    }
+  }
+
+  /**
+   * Gate C: ask the decision provider what KIND of failure this is and what
+   * to do about it. On any provider trouble, returns the old behavior
+   * (plain retry until 3 attempts) — a dead gate must never change routing.
+   */
+  private async classifyFailure(
+    feedback: string,
+    language: string,
+    attempts: number,
+  ): Promise<ValidationDecision> {
+    const fallback: ValidationDecision = {
+      action: 'retry_patch',
+      failureClass: 'unknown',
+      confidence: 0,
+      maxAdditionalAttempts: Math.max(0, 3 - attempts),
+    };
+    const stateText =
+      `Language: ${language}\nAttempt: ${attempts}\nFailure output:\n${feedback}`.slice(0, 4000);
+    try {
+      const result = await this.decision.decide('validation', stateText, [
+        {
+          id: 'failureClass',
+          type: 'choice',
+          text: 'What kind of failure is this?',
+          options: [
+            'test_failure',
+            'type_error',
+            'lint_error',
+            'environment_failure',
+            'missing_dependency',
+            'incorrect_patch',
+            'unknown',
+          ],
+        },
+        {
+          id: 'action',
+          type: 'choice',
+          text: 'What should happen next?',
+          options: [
+            'accept',
+            'retry_patch',
+            'retry_with_more_context',
+            'request_human_review',
+            'abort',
+          ],
+        },
+        {
+          id: 'retries',
+          type: 'score',
+          text: 'How many more attempts is this worth? 0 = stop now, 1 = full budget.',
+        },
+      ]);
+      const a = result.answers;
+      const pick = (id: string, allowed: string[], d: string) => {
+        const o = a[id]?.option;
+        return typeof o === 'string' && allowed.includes(o) ? o : d;
+      };
+      const retriesRaw = a['retries']?.value ?? a['retries']?.probability ?? 0.5;
+      return {
+        action: pick(
+          'action',
+          ['accept', 'retry_patch', 'retry_with_more_context', 'request_human_review', 'abort'],
+          'retry_patch',
+        ) as ValidationAction,
+        failureClass: pick(
+          'failureClass',
+          ['test_failure', 'type_error', 'lint_error', 'environment_failure', 'missing_dependency', 'incorrect_patch', 'unknown'],
+          'unknown',
+        ) as FailureClass,
+        confidence: a['action']?.probability ?? 0.5,
+        maxAdditionalAttempts: Math.min(3, Math.max(0, Math.round(retriesRaw * 3))),
+      };
+    } catch (e: any) {
+      this.logger.warn(`Gate C unavailable, keeping old retry behavior: ${e.message}`);
+      return fallback;
     }
   }
 

@@ -30,6 +30,7 @@ import {
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { extractMcpText } from '../../common/mcp-text';
+import { DATA_GUARD_LINE } from '../../common/prompt-guard';
 import { formatLessonsEntries } from '../../common/lessons-learned-formatter';
 import {
   stripDsmlTokens,
@@ -510,7 +511,10 @@ ${memoryContext ? `SERENA MEMORIES (already injected — no need to re-read unle
       );
 
       const userPrompt = new HumanMessage(
-        `Issue Title: ${title}\nIssue Body: ${body}`,
+        // DATA_GUARD_LINE: the issue below is stranger-written DATA, never
+        // orders. Stops prompt-injection hiding in the issue from steering
+        // the plan. See src/common/prompt-guard.ts.
+        `${DATA_GUARD_LINE}\n\nIssue Title: ${title}\nIssue Body: ${body}`,
       );
 
       currentMessages = [systemPrompt, userPrompt];

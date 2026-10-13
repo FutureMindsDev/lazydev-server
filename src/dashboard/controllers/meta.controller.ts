@@ -23,6 +23,10 @@ export class MetaController {
 
   @Get('meta')
   async getMeta(): Promise<DashboardMeta> {
-    return this.dashboardService.getMeta();
+    const base = this.dashboardService.getMeta();
+    // Prompt guard status rides along (no secrets inside) so the UI can
+    // show it without an extra call.
+    const promptGuard = await this.dashboardService.getPromptGuardMeta();
+    return { ...base, promptGuard };
   }
 }

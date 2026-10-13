@@ -27,6 +27,7 @@
  * since they're only used for output typing.
  */
 import {
+  IsBoolean,
   IsString,
   IsNotEmpty,
   IsOptional,
@@ -57,6 +58,12 @@ export interface DashboardMeta {
     login: string;
     avatarUrl: string;
     installations: number[];
+  };
+  /** Prompt guard status (no secrets inside) for the settings UI. */
+  promptGuard?: {
+    enabled: boolean;
+    clefActive: boolean;
+    provider: string;
   };
 }
 
@@ -222,6 +229,8 @@ export interface SettingsDto {
   byok: ByokSettingsDto;
   /** Saved provider configs that can be assigned to specific agents. */
   providers: ProviderConfigDto[];
+  /** Prompt guard status (regex layer + decision-model layer). */
+  guard: GuardSettingsDto;
   sandbox: {
     networkMode: 'none' | 'restricted' | 'unrestricted';
     timeout: number;
@@ -238,6 +247,37 @@ export interface SettingsDto {
     type: string;
     hostMasked: string;
   };
+}
+
+/** Prompt guard status (GET settings → guard). Never carries secrets —
+ *  the API token is reported as configured true/false only. */
+export interface GuardSettingsDto {
+  /** Regex/normalize layer — always on, cannot be switched off. */
+  regexAlwaysOn: boolean;
+  /** Effective Clef switch (env AND stored flag). */
+  clefEnabled: boolean;
+  /** Cloudflare account + token present? */
+  clefConfigured: boolean;
+  clefModel: string;
+  blockAt: number;
+  quarantineAt: number;
+  /** Serving decision provider + fallback (ids, for the dropdown). */
+  provider: string;
+  fallback: string;
+}
+
+/** Body for PUT /api/dashboard/settings/guard (Clef toggle). */
+export class UpdateGuardSettingsRequest {
+  @IsBoolean()
+  clefEnabled!: boolean;
+}
+
+/** Body for POST /api/dashboard/settings/guard/test (eval sample). */
+export class TestGuardRequest {
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  text?: string;
 }
 
 /** Body for PUT /api/dashboard/settings/llm (BYOK write). */

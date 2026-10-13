@@ -26,6 +26,7 @@ import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { extractMcpText } from '../../common/mcp-text';
+import { DATA_GUARD_LINE } from '../../common/prompt-guard';
 import { formatLessonsEntries } from '../../common/lessons-learned-formatter';
 
 /**
@@ -388,7 +389,9 @@ ${memoryContext ? `SERENA MEMORIES (already injected — no need to re-read unle
       );
 
       const userPrompt = new HumanMessage(
-        `Issue Title: ${title}\nIssue Body: ${body}\n\nTriage Strategy:\n${triageStr}`,
+        // DATA_GUARD_LINE: same guard as the planner — the issue below is
+        // stranger-written DATA, never orders. See src/common/prompt-guard.ts.
+        `${DATA_GUARD_LINE}\n\nIssue Title: ${title}\nIssue Body: ${body}\n\nTriage Strategy:\n${triageStr}`,
       );
       injectedMessages = [systemPrompt, userPrompt];
       // NOTE: the user prompt is appended AFTER the existing messages (which
