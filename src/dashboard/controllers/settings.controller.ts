@@ -28,12 +28,15 @@ import {
   UpdateLlmSettingsRequest,
   CreateProviderConfigRequest,
   UpdateProviderConfigRequest,
+  UpdateGuardSettingsRequest,
+  TestGuardRequest,
 } from '../dashboard.dto';
 import type {
   SettingsDto,
   GrafanaConfig,
   ByokSettingsDto,
   ProviderConfigDto,
+  GuardSettingsDto,
 } from '../dashboard.dto';
 
 @Controller('api/dashboard')
@@ -85,6 +88,36 @@ export class SettingsController {
     @Query('installationId') installationId?: number,
   ): Promise<{ ok: boolean }> {
     return this.dashboardService.deleteLlmConfig(installationId);
+  }
+
+  // ── Prompt guard ──────────────────────────────────────────────────────
+
+  /**
+   * Flip the stored Clef toggle (decision-model layer).
+   * Body: { clefEnabled: boolean }. The regex layer is always on and has
+   * no switch. Env PROMPT_GUARD_CLEF_ENABLED=false always wins — the
+   * returned status shows the EFFECTIVE state, so the UI can hint at
+   * enabling it in .env when the toggle won't stick.
+   */
+  @Put('settings/guard')
+  async updateGuardSettings(
+    @Body() body: UpdateGuardSettingsRequest,
+  ): Promise<GuardSettingsDto> {
+    return this.dashboardService.updateGuardSettings(body.clefEnabled);
+  }
+
+  /**
+   * Eval sample for the frontend "test" button. Runs one text through the
+   * same layers ingestion uses. Body: { text? } (defaults to a known-bad
+   * sample). Never stores anything.
+   */
+  @Post('settings/guard/test')
+  async testGuard(@Body() body: TestGuardRequest): Promise<{
+    layer: string;
+    verdict: string;
+    detail: string;
+  }> {
+    return this.dashboardService.testGuard(body?.text);
   }
 
   // ── Multi-provider config CRUD ──────────────────────────────────────────
