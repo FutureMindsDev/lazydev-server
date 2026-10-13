@@ -17,6 +17,7 @@ import { ValidationAgent } from './validation.agent';
 import { ValidationService } from '../../validation/validation.service';
 import { SerenaMcpService } from '../../intelligence/serena-mcp.service';
 import { LlmService } from '../llm.service';
+import { DecisionProviderService } from '../../decision/decision-provider.service';
 import type { AgentState } from '../graph.state';
 
 /**
@@ -76,6 +77,13 @@ describe('ValidationAgent — historical_issues_and_lessons persistence', () => 
         { provide: ValidationService, useValue: {} },
         { provide: SerenaMcpService, useValue: serenaMcp },
         { provide: LlmService, useValue: { getModel: () => llmModel } },
+        // Gate C dead by default here → old retry behavior (existing tests).
+        {
+          provide: DecisionProviderService,
+          useValue: {
+            decide: jest.fn().mockRejectedValue(new Error('no provider')),
+          },
+        },
       ],
     }).compile();
 
@@ -283,6 +291,12 @@ describe('ValidationAgent — historical_issues_and_lessons persistence', () => 
           { provide: ValidationService, useValue: validationService },
           { provide: SerenaMcpService, useValue: serenaMcp },
           { provide: LlmService, useValue: { getModel: () => llmModel } },
+          {
+            provide: DecisionProviderService,
+            useValue: {
+              decide: jest.fn().mockRejectedValue(new Error('no provider')),
+            },
+          },
         ],
       }).compile();
       const gatedAgent = module.get(ValidationAgent);
@@ -293,6 +307,87 @@ describe('ValidationAgent — historical_issues_and_lessons persistence', () => 
 
       expect(serenaMcp.activateProject).not.toHaveBeenCalled();
       process.env.ENABLE_SERENA_ISSUE_HISTORY = original;
+    });
+  });
+
+  describe('Gate C — failure classification', () => {
+    const failingService = (stderr: string) => ({
+      validateWorktree: jest.fn().mockResolvedValue({
+        success: false,
+        language: 'NODEJS',
+        stderr,
+      }),
+    });
+    const gateModule = async (decide: jest.Mock) => {
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          ValidationAgent,
+          { provide: ValidationService, useValue: failingService('boom') },
+          { provide: SerenaMcpService, useValue: serenaMcp },
+          { provide: LlmService, useValue: { getModel: () => llmModel } },
+          { provide: DecisionProviderService, useValue: { decide } },
+        ],
+      }).compile();
+      return module.get(ValidationAgent);
+    };
+
+    it('retries the patch on incorrect_patch with a Gate C budget', async () => {
+      const gated = await gateModule(
+        jest.fn().mockResolvedValue({
+          providerId: 'test',
+          answers: {
+            failureClass: { option: 'incorrect_patch', probability: 0.9 },
+            action: { option: 'retry_patch', probability: 0.9 },
+            retries: { value: 0.66, probability: 0.8 },
+          },
+        }),
+      );
+      const result = await gated.invoke(stateWith());
+      expect(result.isValid).toBe(false);
+      expect(result.abortReason).toBeUndefined();
+      // attempts(1) + round(0.66*3)=2 → budget 3.
+      expect(result.validationMaxAttempts).toBe(3);
+    });
+
+    it('stops for a human with abortReason on request_human_review', async () => {
+      const gated = await gateModule(
+        jest.fn().mockResolvedValue({
+          providerId: 'test',
+          answers: {
+            failureClass: { option: 'test_failure', probability: 0.9 },
+            action: { option: 'request_human_review', probability: 0.9 },
+            retries: { value: 0, probability: 0.9 },
+          },
+        }),
+      );
+      const result = await gated.invoke(stateWith());
+      expect(result.isValid).toBe(false);
+      expect(result.abortReason).toContain('human review');
+    });
+
+    it('accepts the run when Gate C says accept', async () => {
+      const gated = await gateModule(
+        jest.fn().mockResolvedValue({
+          providerId: 'test',
+          answers: {
+            failureClass: { option: 'environment_failure', probability: 0.9 },
+            action: { option: 'accept', probability: 0.9 },
+            retries: { value: 0, probability: 0.9 },
+          },
+        }),
+      );
+      const result = await gated.invoke(stateWith());
+      expect(result.isValid).toBe(true);
+    });
+
+    it('keeps old behavior when providers are dead', async () => {
+      const gated = await gateModule(
+        jest.fn().mockRejectedValue(new Error('all down')),
+      );
+      const result = await gated.invoke(stateWith());
+      expect(result.isValid).toBe(false);
+      expect(result.abortReason).toBeUndefined();
+      expect(result.validationMaxAttempts).toBe(3);
     });
   });
 });

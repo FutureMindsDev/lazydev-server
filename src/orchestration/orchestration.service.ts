@@ -27,6 +27,7 @@ import { GitAgent } from './agents/git.agent';
 import { LlmService } from './llm.service';
 import { AuditLogService } from './audit-log.service';
 import { HumanFeedbackService } from '../feedback/human-feedback.service';
+import { PipelineGatesService } from './pipeline-gates.service';
 import {
   checkBatchDispatch,
   DispatchCheckerConfig,
@@ -81,6 +82,7 @@ export class OrchestrationService implements OnModuleInit {
     private readonly gitAgent: GitAgent,
     private readonly auditLogService: AuditLogService,
     private readonly humanFeedbackService: HumanFeedbackService,
+    private readonly pipelineGates: PipelineGatesService,
     // Optional so unit tests can construct OrchestrationService without the
     // DB-backed LLM service (BYOK priming is skipped when absent).
     @Optional() private readonly llmService?: LlmService,
@@ -189,6 +191,19 @@ export class OrchestrationService implements OnModuleInit {
     workflow.addNode('patcher', async (state: any) =>
       this.patchGenerator.invoke(state),
     );
+
+    // Gate A (triage) node: classifies the issue and decides whether a
+    // human must review it before any planning happens. Sits between
+    // onboarding and planning so nothing is planned for quarantined jobs.
+    workflow.addNode('triage', async (state: AgentState) =>
+      this.pipelineGates.triageNode(state),
+    );
+
+    // Gate B (patch safety) node: judges the finished patch before the
+    // sandbox spends time validating it. Sits between patcher and validator.
+    workflow.addNode('patch_gate', async (state: AgentState) =>
+      this.pipelineGates.patchGateNode(state),
+    );
     // Tools node for the patcher's own tool loop.
     //
     // Same dispatch-boundary repeat detection as planner_tools: duplicate
@@ -265,7 +280,23 @@ export class OrchestrationService implements OnModuleInit {
 
     // Define edges
     workflow.addEdge(START, 'onboarding');
-    workflow.addEdge('onboarding', 'planner');
+    // Onboarding → triage (Gate A) → planner. Quarantined jobs end here:
+    // a human approves via feedback, which re-runs with a bypass.
+    workflow.addEdge('onboarding', 'triage');
+    workflow.addConditionalEdges(
+      'triage',
+      (state: AgentState) => {
+        if (state.triageVerdict?.route === 'quarantine') {
+          this.logger.warn('Triage quarantined the job — ending for human review.');
+          return END;
+        }
+        return 'planner';
+      },
+      {
+        planner: 'planner',
+        [END]: END,
+      },
+    );
 
     // Tool loop conditional edge for the planner:
     //   - If the LLM made tool calls → route to 'planner_tools'
@@ -319,7 +350,7 @@ export class OrchestrationService implements OnModuleInit {
     // Tool loop conditional edge for the patcher:
     //   - If the generator LLM made tool calls → route to 'patcher_tools'
     //   - If the generator LLM produced a final summary (no tool calls) →
-    //     route to 'validator'
+    //     route to 'patch_gate' (Gate B judges safety before validation)
     // This mirrors the research ⇄ tools loop but operates on the dedicated
     // `patchMessages` channel so the patcher's edit conversation never
     // pollutes the research/planning `messages` timeline.
@@ -329,25 +360,46 @@ export class OrchestrationService implements OnModuleInit {
         const lastMessage =
           state.patchMessages?.[state.patchMessages.length - 1];
         // Hard cap: if the patcher has been looping for too long, force-break
-        // to validator regardless of tool_calls. The patcher's own soft limit
+        // to the gate regardless of tool_calls. The patcher's own soft limit
         // should have already stopped it, but this catches edge cases.
         if (
           (state.patchMessages?.length ?? 0) > HARD_CAP_PATCHER_MESSAGES
         ) {
           this.logger.warn(
             `Patcher hard cap reached (${state.patchMessages?.length} messages). ` +
-              `Force-routing to validator.`,
+              `Force-routing to patch gate.`,
           );
-          return 'validator';
+          return 'patch_gate';
         }
         if (lastMessage && (lastMessage as any).tool_calls?.length > 0) {
           return 'patcher_tools';
         }
-        return 'validator';
+        return 'patch_gate';
       },
       {
         patcher_tools: 'patcher_tools',
+        patch_gate: 'patch_gate',
+      },
+    );
+
+    // Gate B routing: safe patches flow to the validator, asked-for
+    // retries loop back to the patcher, everything else ends for a human.
+    workflow.addConditionalEdges(
+      'patch_gate',
+      (state: AgentState) => {
+        const decision = state.patchGateDecision || 'validate';
+        if (decision === 'validate') return 'validator';
+        if (decision === 'retry_patch') {
+          this.logger.log('Patch gate asked for a patch retry.');
+          return 'patcher';
+        }
+        this.logger.warn(`Patch gate ended the job (decision=${decision}).`);
+        return END;
+      },
+      {
         validator: 'validator',
+        patcher: 'patcher',
+        [END]: END,
       },
     );
 
@@ -360,14 +412,22 @@ export class OrchestrationService implements OnModuleInit {
     workflow.addConditionalEdges(
       'validator',
       (state: AgentState) => {
+        // Fail-fast lane (Gate B abort, Gate C abort/human): end now,
+        // never retry. The reason is already logged + alerted.
+        if (state.abortReason) {
+          this.logger.warn(`Ending run early: ${state.abortReason}`);
+          return END;
+        }
         if (state.isValid) {
           return 'git';
         }
-        if ((state.validationAttempts || 0) < 3) {
+        // Gate C may raise/lower the budget per failure class (default 3).
+        const maxAttempts = state.validationMaxAttempts ?? 3;
+        if ((state.validationAttempts || 0) < maxAttempts) {
           this.logger.warn(`Validation failed (Attempt ${state.validationAttempts}). Retrying patch generation...`);
           return 'human_feedback';
         }
-        this.logger.error(`Validation failed 3 times. Aborting workflow.`);
+        this.logger.error(`Validation failed ${state.validationMaxAttempts ?? 3} times. Aborting workflow.`);
         return END;
       },
       {

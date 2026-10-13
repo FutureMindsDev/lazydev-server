@@ -79,6 +79,34 @@ export interface AgentState {
   // and planner_tools nodes grow it across their inner loop; it is
   // implicitly empty at the start of a pipeline run (default: () => []).
   plannerMessages?: any[];
+
+  // Gate A (triage) verdict — set by the triage node before the planner
+  // runs: issue kind, complexity, whether a human must review. Plain data
+  // so every later node can read it without calling a model again.
+  triageVerdict?: any;
+
+  // Gate B (patch safety) outcome: 'low' | 'medium' | 'high'. Recorded even
+  // when the patch proceeds, so reviewers and the dashboard can see it.
+  patchRisk?: string;
+
+  // Gate B retry counter: how many times the patch gate sent work back to
+  // the patcher. Capped (2) so a stubborn patcher can't loop forever.
+  patchGateAttempts?: number;
+
+  // Gate B routing verdict: 'validate' | 'retry_patch' |
+  // 'request_human_review' | 'abort'. Read by the patch_gate conditional
+  // edge. 'request_human_review' on a medium-risk patch is stored while
+  // routing to validate (see PipelineGatesService).
+  patchGateDecision?: string;
+
+  // Fail-fast lane: when set (Gate B abort, Gate C abort/human), the
+  // validator's conditional edge ends the run immediately instead of
+  // retrying. Human-readable reason, shown in logs and audit.
+  abortReason?: string;
+
+  // Gate C (smart retry) may raise or lower the retry budget per failure
+  // class. Defaults to 3 (today's behavior) when no gate has spoken.
+  validationMaxAttempts?: number;
 }
 
 // Defining how state is updated across nodes (Channels)
@@ -157,5 +185,34 @@ export const agentStateChannels: StateGraphArgs<AgentState>['channels'] = {
     reducer: (a: any[] | undefined, b: any[] | undefined) =>
       b !== undefined ? b : a,
     default: () => [],
+  },
+  triageVerdict: {
+    reducer: (a: any, b: any) => (b !== undefined ? b : a),
+    default: () => undefined,
+  },
+  patchRisk: {
+    reducer: (a: string | undefined, b: string | undefined) =>
+      b !== undefined ? b : a,
+    default: () => undefined,
+  },
+  patchGateAttempts: {
+    reducer: (a: number | undefined, b: number | undefined) =>
+      b !== undefined ? b : a,
+    default: () => 0,
+  },
+  patchGateDecision: {
+    reducer: (a: string | undefined, b: string | undefined) =>
+      b !== undefined ? b : a,
+    default: () => undefined,
+  },
+  abortReason: {
+    reducer: (a: string | undefined, b: string | undefined) =>
+      b !== undefined ? b : a,
+    default: () => undefined,
+  },
+  validationMaxAttempts: {
+    reducer: (a: number | undefined, b: number | undefined) =>
+      b !== undefined ? b : a,
+    default: () => 3,
   },
 };
