@@ -350,6 +350,15 @@ export class PipelineGatesService {
       if (finalDecision === 'request_human_review') {
         // Medium path: still validate, but the risk travels in state and a
         // review note goes out so a human checks the PR.
+        const taskId = this.taskIdOf(state);
+        if (taskId) {
+          await this.feedback.storeGateStatus(taskId, {
+            stoppedBy: 'patch-gate',
+            decision: 'validate',
+            risk,
+            reason: `medium risk under validation: ${reasons.slice(0, 5).join('; ') || 'see logs'}`,
+          });
+        }
         await this.notifications.sendDiscordNotification({
           title: 'Medium-risk patch under validation',
           description: `A patch was rated **medium risk** and is being validated. Please review the PR when it opens.\nReasons: ${reasons.slice(0, 5).join('; ') || 'see logs'}`,
@@ -381,13 +390,20 @@ export class PipelineGatesService {
   /** Stop the job loudly: log + Discord so a human knows where to look. */
   private async quarantine(
     state: AgentState,
-    gate: string,
+    gate: 'triage' | 'patch-gate',
     title: string,
     repo: string,
     reason: string,
   ): Promise<void> {
     const taskId = this.taskIdOf(state) || 'unknown';
     this.logger.warn(`[${gate}] quarantined task ${taskId}: ${reason}`);
+    if (taskId !== 'unknown') {
+      await this.feedback.storeGateStatus(taskId, {
+        stoppedBy: gate,
+        decision: 'quarantine',
+        reason,
+      });
+    }
     await this.notifications
       .sendDiscordNotification({
         title: `Job quarantined by ${gate} (task ${taskId})`,

@@ -18,12 +18,25 @@ import Redis from 'ioredis';
 
 /**
  * Redis-backed store for human feedback submitted against a running pipeline
- * task (via the MCP `provide_human_feedback` tool).
+ * task (via the MCP `provide_human_feedback` tool), plus short-lived gate
+ * verdicts (see below).
  *
  * Lives in its own module because both the MCP server (writer) and the
  * orchestration graph (reader) depend on it — putting it in either one would
  * create a circular module dependency.
  */
+
+/** What a pipeline gate decided, shown on the run-detail page. */
+export interface GateSummary {
+  /** Which gate stopped or flagged the run. */
+  stoppedBy: 'triage' | 'patch-gate' | 'validation-gate';
+  /** Gate routing verdict (e.g. quarantine / abort / validate). */
+  decision: string;
+  /** Risk level when the gate assigns one. */
+  risk?: string | null;
+  /** Plain-words reason (no raw issue text, no secrets). */
+  reason: string;
+}
 @Injectable()
 export class HumanFeedbackService implements OnModuleDestroy {
   private readonly logger = new Logger(HumanFeedbackService.name);
@@ -97,5 +110,44 @@ export class HumanFeedbackService implements OnModuleDestroy {
 
   private tsKey(taskId: string): string {
     return `mcp:feedback:${taskId}:ts`;
+  }
+
+  private gateKey(taskId: string): string {
+    return `gate:${taskId}`;
+  }
+
+  /**
+   * Records a gate verdict so the run-detail page can show WHY a job was
+   * stopped or flagged (e.g. "patch gate: high risk — dependency files
+   * touched"). Same 24h TTL as results — the banner simply expires with
+   * the task data. Never throws (dashboard reads must not fail on this).
+   */
+  async storeGateStatus(
+    taskId: string,
+    summary: GateSummary,
+  ): Promise<void> {
+    try {
+      await this.redis.set(
+        this.gateKey(taskId),
+        JSON.stringify(summary),
+        'EX',
+        this.TTL_SECONDS,
+      );
+    } catch (e: any) {
+      this.logger.warn(`Could not store gate status: ${e.message}`);
+    }
+  }
+
+  /** Reads the gate verdict for run detail (null = none recorded/expired). */
+  async readGateStatus(taskId: string): Promise<GateSummary | null> {
+    try {
+      const raw = await this.redis.get(this.gateKey(taskId));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as GateSummary;
+      if (!parsed || typeof parsed.reason !== 'string') return null;
+      return parsed;
+    } catch {
+      return null;
+    }
   }
 }

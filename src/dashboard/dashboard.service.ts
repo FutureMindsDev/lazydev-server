@@ -123,6 +123,10 @@ export class DashboardService {
     const feedbackStatus: FeedbackStatus =
       await this.humanFeedbackService.getFeedbackStatus(taskId);
 
+    // Gate verdict for the run-detail banner (null when no gate stopped or
+    // flagged this run, or when the 24h record expired — same TTL as tasks).
+    const gateSummary = await this.humanFeedbackService.readGateStatus(taskId);
+
     return {
       ...this.toAuditLogDto(log),
       repo: log.repo,
@@ -134,6 +138,7 @@ export class DashboardService {
       implementationPlan: log.implementationPlan,
       pipelineStages: derivePipelineStages(log),
       feedbackStatus,
+      gateSummary,
     };
   }
 

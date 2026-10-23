@@ -21,6 +21,7 @@ import { SerenaMcpService } from '../../intelligence/serena-mcp.service';
 import { LlmService } from '../llm.service';
 import { extractMcpText } from '../../common/mcp-text';
 import { DecisionProviderService } from '../../decision/decision-provider.service';
+import { HumanFeedbackService } from '../../feedback/human-feedback.service';
 import {
   FailureClass,
   ValidationAction,
@@ -36,6 +37,7 @@ export class ValidationAgent {
     private readonly serenaMcp: SerenaMcpService,
     private readonly llmService: LlmService,
     private readonly decision: DecisionProviderService,
+    private readonly feedback: HumanFeedbackService,
   ) {}
 
   async invoke(state: AgentState): Promise<Partial<AgentState>> {
@@ -112,6 +114,15 @@ export class ValidationAgent {
               ? `Gate C aborted the run (class=${gate.failureClass})`
               : `Gate C asked for human review (class=${gate.failureClass})`;
           this.logger.warn(reason);
+          // Record for the run-detail banner (same 24h TTL as task data).
+          const taskId = state.issuePayload?.taskId;
+          if (taskId) {
+            await this.feedback.storeGateStatus(taskId, {
+              stoppedBy: 'validation-gate',
+              decision: gate.action,
+              reason,
+            });
+          }
           return {
             isValid: false,
             validationFeedback: `${reason}:\n${feedback}`,
