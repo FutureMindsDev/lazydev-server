@@ -48,9 +48,9 @@ services:
     build: .
     container_name: lazydev-app
     ports:
-      - "3200:3200"   # Main REST API + GitHub webhooks + MCP
+      - "3200:3200" # Main REST API + GitHub webhooks + MCP
     environment:
-      - NODE_ENV=production
+      - NODE_ENV=development
       - DB_HOST=postgres
       - REDIS_HOST=redis
       - QDRANT_URL=http://qdrant:6333
@@ -299,30 +299,29 @@ services:
   #   docker compose --profile tunnel up -d
   # The public URL is printed in `docker compose logs ngrok`.
   #
-  # ngrok:
-  #   image: ngrok/ngrok:latest
-  #   container_name: lazydev-ngrok
-  #   profiles: ['tunnel']
-  #   # The ngrok image's default entrypoint is `ngrok` and its shell lives at
-  #   # /usr/bin/sh (not /bin/sh), so we override the entrypoint to /usr/bin/sh
-  #   # to allow shell conditional logic for the optional --domain flag.
-  #   entrypoint: ["/usr/bin/sh", "-c"]
-  #   # Forward the public ngrok URL to the app service on the internal network.
-  #   # --log=stdout surfaces the public URL in `docker compose logs ngrok`.
-  #   # --domain is optional: set NGROK_DOMAIN in .env for a stable URL
-  #   # (free tier gives a random one each start; a reserved domain needs a paid plan).
-  #   command:
-  #     - |
-  #       ngrok http app:3200 --log=stdout ${NGROK_DOMAIN:+--domain=$$NGROK_DOMAIN}
-  #   environment:
-  #     - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-  #   ports:
-  #           - '127.0.0.1:4040:4040'   # local inspection dashboard (http://localhost:4040)
-  #   depends_on:
-  #     - app
-  #   networks:
-  #     - lazydev-network
-
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: lazydev-ngrok
+    profiles: [ 'tunnel' ]
+    # The ngrok image's default entrypoint is `ngrok` and its shell lives at
+    # /usr/bin/sh (not /bin/sh), so we override the entrypoint to /usr/bin/sh
+    # to allow shell conditional logic for the optional --domain flag.
+    entrypoint: [ "/usr/bin/sh", "-c" ]
+    # Forward the public ngrok URL to the app service on the internal network.
+    # --log=stdout surfaces the public URL in `docker compose logs ngrok`.
+    # --domain is optional: set NGROK_DOMAIN in .env for a stable URL
+    # (free tier gives a random one each start; a reserved domain needs a paid plan).
+    command:
+      - |
+        ngrok http app:3200 --log=stdout ${NGROK_DOMAIN:+--domain=$$NGROK_DOMAIN}
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - '127.0.0.1:4040:4040' # local inspection dashboard (http://localhost:4040)
+    depends_on:
+      - app
+    networks:
+      - lazydev-network
   # ── Option 2: Tailscale (Funnel) ────────────────────────────────────────────
   # Requires a Tailscale account + an auth key (https://login.tailscale.com/admin/settings/keys).
   # Put it in .env as TAILSCALE_AUTH_KEY. You must also enable HTTPS/Funnel on
@@ -357,7 +356,7 @@ volumes:
   grafana-data:
   worktrees:
   repo-cache:
-  # tailscale-data:
+    # tailscale-data:
 
 networks:
   lazydev-network:
