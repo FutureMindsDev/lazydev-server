@@ -18,6 +18,7 @@ import { ValidationService } from '../../validation/validation.service';
 import { SerenaMcpService } from '../../intelligence/serena-mcp.service';
 import { LlmService } from '../llm.service';
 import { DecisionProviderService } from '../../decision/decision-provider.service';
+import { HumanFeedbackService } from '../../feedback/human-feedback.service';
 import type { AgentState } from '../graph.state';
 
 /**
@@ -83,6 +84,10 @@ describe('ValidationAgent — historical_issues_and_lessons persistence', () => 
           useValue: {
             decide: jest.fn().mockRejectedValue(new Error('no provider')),
           },
+        },
+        {
+          provide: HumanFeedbackService,
+          useValue: { storeGateStatus: jest.fn().mockResolvedValue(undefined) },
         },
       ],
     }).compile();
@@ -297,6 +302,10 @@ describe('ValidationAgent — historical_issues_and_lessons persistence', () => 
               decide: jest.fn().mockRejectedValue(new Error('no provider')),
             },
           },
+          {
+            provide: HumanFeedbackService,
+            useValue: { storeGateStatus: jest.fn().mockResolvedValue(undefined) },
+          },
         ],
       }).compile();
       const gatedAgent = module.get(ValidationAgent);
@@ -326,6 +335,10 @@ describe('ValidationAgent — historical_issues_and_lessons persistence', () => 
           { provide: SerenaMcpService, useValue: serenaMcp },
           { provide: LlmService, useValue: { getModel: () => llmModel } },
           { provide: DecisionProviderService, useValue: { decide } },
+          {
+            provide: HumanFeedbackService,
+            useValue: { storeGateStatus: jest.fn().mockResolvedValue(undefined) },
+          },
         ],
       }).compile();
       return module.get(ValidationAgent);

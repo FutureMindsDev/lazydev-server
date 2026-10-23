@@ -108,6 +108,13 @@ export interface RunDetailDto extends AuditLogDto {
   implementationPlan?: string | null;
   pipelineStages?: PipelineStage[];
   feedbackStatus?: FeedbackStatus;
+  /** Gate verdict banner (null = no gate stopped/flagged this run, or expired). */
+  gateSummary?: {
+    stoppedBy: 'triage' | 'patch-gate' | 'validation-gate';
+    decision: string;
+    risk?: string | null;
+    reason: string;
+  } | null;
 }
 
 export class FeedbackRequest {
