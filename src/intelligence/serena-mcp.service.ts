@@ -103,8 +103,65 @@ export class SerenaMcpService implements OnModuleInit, OnModuleDestroy {
   }
 
   // MCP Wrapper Methods
+  private serenaSessionId: string | null = null;
+
+  /**
+   * Serena's session-aware tools (`activate_project`) require a `session`
+   * argument. The id is minted by the `initial_instructions` tool, whose
+   * prompt contains "Your Serena session id is `<id>`". Cached for the
+   * lifetime of this client; cleared and re-fetched on session errors.
+   *
+   * NOTE (Serena v2): the parameter used to be named `session_id`; v2 renamed
+   * it to `session`. Sending the old name is rejected by the server with
+   * "activate_project rejected arguments: ['session']".
+   */
+  async getSerenaSessionId(refresh = false): Promise<string> {
+    if (!refresh && this.serenaSessionId) return this.serenaSessionId;
+    const res = (await this.callTool('initial_instructions', {})) as {
+      isError?: unknown;
+      content?: Array<{ type?: unknown; text?: unknown }>;
+    };
+    const texts = Array.isArray(res?.content)
+      ? res.content
+          .filter(
+            (c): c is { type?: unknown; text?: unknown } =>
+              typeof c === 'object' && c !== null,
+          )
+          .map((c) => (typeof c.text === 'string' ? c.text : ''))
+          .join('\n')
+      : '';
+    const match = /Your Serena session id is `([^`]+)`/.exec(texts);
+    if (!match) {
+      throw new Error(
+        'Serena initial_instructions did not return a session id; cannot activate project.',
+      );
+    }
+    this.serenaSessionId = match[1];
+    return match[1];
+  }
+
   async activateProject(worktreePath: string): Promise<any> {
-    return this.callTool('activate_project', { project: worktreePath });
+    const sessionId = await this.getSerenaSessionId();
+    try {
+      return await this.callTool('activate_project', {
+        project: worktreePath,
+        session: sessionId,
+      });
+    } catch (e: unknown) {
+      // Session may have died with a Serena restart — refresh once and retry.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/session/i.test(msg)) {
+        this.logger.warn(
+          `Serena session expired (${msg}). Refreshing session and retrying activate_project...`,
+        );
+        const fresh = await this.getSerenaSessionId(true);
+        return await this.callTool('activate_project', {
+          project: worktreePath,
+          session: fresh,
+        });
+      }
+      throw e;
+    }
   }
 
   async getSymbolsOverview(filePath: string): Promise<any> {
@@ -288,7 +345,10 @@ export class SerenaMcpService implements OnModuleInit, OnModuleDestroy {
     return this.callTool('write_memory', { memory_name: name, content });
   }
 
-  private async callTool(toolName: string, args: any): Promise<any> {
+  private async callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<any> {
     if (!this.client) {
       this.logger.error(
         `Cannot call tool ${toolName}, MCP client is not connected.`,

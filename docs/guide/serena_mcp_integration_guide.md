@@ -59,6 +59,29 @@ services:
 > [!TIP]
 > If Serena doesn't have an official Docker image, you can create one using `uv` to install and run it. Alternatively, run it as a subprocess from your NestJS app using stdio transport.
 
+> [!WARNING]
+> **Pin Serena and force the classic tools interface.** The example Dockerfile
+> clones `https://github.com/oraios/serena.git` from `main`, which is
+> **unpinned** — a rebuild can jump major versions. **Serena v2 changed the
+> default `agent_interface` from `tools` to `REPL`**, and REPL mode exposes only
+> `activate_project`, `initial_instructions`, and `serena_repl`. Every classic
+> tool call (`read_file`, `get_symbols_overview`, `find_symbol`,
+> `create_text_file`, `write_memory`, …) then fails with `Unknown tool: <name>`.
+>
+> After copying the config template, force the classic interface:
+>
+> ```dockerfile
+> RUN sed -i 's/agent_interface: REPL/agent_interface: tools/' $SERENA_HOME/serena_config.yml
+> ```
+>
+> Verify the container logs show `Using agent interface 'tools'` and
+> `Starting MCP server with 30 tools` (not `3 tools`). Prefer pinning a Serena
+> tag/commit instead of tracking `main`.
+>
+> Also note: Serena v2 renamed `activate_project`'s `session_id` argument to
+> `session`. The wrapper must send `{ project, session }`, or the server rejects
+> the call with `rejected arguments: ['session']`.
+
 ### Step 3: Create an MCP Client in Your NestJS App
 
 Create a new service that communicates with Serena over MCP:

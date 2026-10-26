@@ -53,13 +53,14 @@ RUN git clone https://github.com/oraios/serena.git . \
     && uv venv \
     && uv pip install -r pyproject.toml -e .
 
-# Configure Serena (disable GUI and dashboard)
+# Configure Serena (disable GUI and dashboard, use classic tools interface)
 ENV SERENA_HOME=/app/config
 RUN mkdir -p $SERENA_HOME \
     && cp src/serena/resources/serena_config.template.yml $SERENA_HOME/serena_config.yml \
     && sed -i 's/gui_log_window:.*/gui_log_window: False/' $SERENA_HOME/serena_config.yml \
     && sed -i 's/web_dashboard_open_on_launch:.*/web_dashboard_open_on_launch: False/' $SERENA_HOME/serena_config.yml \
     && sed -i 's/web_dashboard_listen_address:.*/web_dashboard_listen_address: "0.0.0.0"/' $SERENA_HOME/serena_config.yml \
+    && sed -i 's/agent_interface: REPL/agent_interface: tools/' $SERENA_HOME/serena_config.yml \
     && sed -i '/markdown:/,+5d' $SERENA_HOME/serena_config.yml
 
 # Expose the port for the MCP Streamable HTTP server

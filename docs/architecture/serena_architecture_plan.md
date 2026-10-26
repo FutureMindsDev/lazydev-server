@@ -15,6 +15,11 @@ The objective is to integrate the Serena Model Context Protocol (MCP) server int
     - *Pros:* Easier communication (standard I/O pipes instead of networking).
     - *Cons:* Bloats the primary app image massively. Mixes Node.js runtime environments with Python/`uv` and language-specific SDKs, increasing the risk of dependency conflicts and slowing down CI/CD build times.
 - **Transport Protocol:** `StreamableHTTPClientTransport` from `@modelcontextprotocol/sdk` (upgraded from SSE). The NestJS client connects to Serena at `http://lazydev-serena:3333/mcp`.
+- **Serena v2 Compatibility (`agent_interface`):**
+  - The Serena image is built from an **unpinned** `git clone` of `main`, so builds are not reproducible across Serena releases.
+  - Serena **v2 changed the default `agent_interface` from `tools` to `REPL`**. REPL mode exposes only `activate_project`, `initial_instructions`, and `serena_repl`; the classic per-operation tools used by `SerenaMcpService` (`read_file`, `create_text_file`, `get_symbols_overview`, `find_symbol`, `write_memory`, …) are **not registered**, and every call fails with `Unknown tool: <name>`.
+  - `Dockerfile.serena` therefore forces `agent_interface: tools` when generating `serena_config.yml`, and startup is expected to log `Using agent interface 'tools'` with `Starting MCP server with 30 tools`.
+  - Serena v2 also **renamed `activate_project`'s `session_id` argument to `session`**; `SerenaMcpService.activateProject()` sends `session`. Sending the old name is rejected with `Tool 'activate_project' rejected arguments: ['session']`.
 - **Hybrid Intelligence Model:**
   - **RAG (Qdrant)**: Used strictly for *Discovery* (finding semantically related files and historical fixes).
   - **Serena (LSP)**: Used for *Precision* (extracting function signatures, finding callers, and modifying exact symbols).
@@ -176,6 +181,20 @@ flowchart TD
 > Note this only versions memories going forward, on the next successful fix/feature for a given repo — it does not retroactively add them to past commits, and a repo that has never had a successful LazyDev run yet won't have `.lazydev/memory/` until it does.
 >
 > Tests: `mcp-text.spec.ts` (new, 6), `lessons-learned-formatter.spec.ts` (new, 6), `git.agent.spec.ts` (+8, 19 total), `worktree-path-guard.spec.ts` (+1, 12 total).
+
+> **2026-10-26, Serena v2 upgrade regression — `agent_interface: REPL` and `activate_project.session`.**
+>
+> *Symptom:* after an image rebuild, `OnboardingAgent`/`PlannerAgent`/`PatchGeneratorAgent` reported that `read_file`, `get_symbols_overview`, `find_symbol`, `create_text_file`, and `write_memory` all returned `Unknown tool: <name>`. Only `activate_project`/`initial_instructions` appeared to work. The patch generator hard-stopped with "the file-reading and file-editing tools are unavailable in this session."
+>
+> *Root cause:* the Serena image is an **unpinned `git clone` of `main`** at build time, so the rebuild pulled **Serena v2**, which changed the default `agent_interface` from `tools` to `REPL`. The generated `serena_config.yml` therefore started the MCP server in REPL mode, exposing only three tools (`activate_project`, `initial_instructions`, `serena_repl`). The classic per-operation tools are not registered in REPL mode, so `SerenaMcpService.callTool()` received `Unknown tool` for every file/memory/symbol call. Separately, v2 renamed `activate_project`'s `session_id` argument to `session`; the client still sent `session_id`, producing `Tool 'activate_project' rejected arguments: ['session']`.
+>
+> *Fix:*
+> - `Dockerfile.serena` now forces the classic interface when generating the config: `sed -i 's/agent_interface: REPL/agent_interface: tools/'`. Startup must log `Using agent interface 'tools'` and `Starting MCP server with 30 tools`.
+> - `SerenaMcpService.activateProject()` now sends `session` (v2) instead of `session_id`; the retry/fresh-session path was updated too.
+>
+> *Verification:* `docker compose build serena && docker compose up -d serena`, then confirm the interface/tool count in `docker logs lazydev-serena`; run a job and confirm `read_file`/`write_memory` no longer return `Unknown tool`.
+>
+> Tests: `serena-mcp.service.spec.ts` updated for the `session` argument.
 
 ### Pending 🔲
 | Component | Details |

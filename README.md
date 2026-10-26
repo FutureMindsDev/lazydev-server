@@ -243,6 +243,39 @@ docker compose up -d --build
 > docker compose up -d
 > \`
 
+### Serena sidecar versioning (v2 `agent_interface`)
+
+`Dockerfile.serena` clones Serena from the **unpinned** `main` branch at build
+time, so a rebuild can silently pick up a new Serena major version. **Serena v2
+changed the default `agent_interface` from `tools` to `REPL`.** In REPL mode the
+MCP server exposes only three tools (`activate_project`, `initial_instructions`,
+`serena_repl`) — the per-operation tools our agents rely on (`read_file`,
+`get_symbols_overview`, `find_symbol`, `create_text_file`, `write_memory`, …) are
+not registered, and every call fails with `Unknown tool: <name>`.
+
+The Dockerfile forces the classic interface when generating the config:
+
+```dockerfile
+sed -i 's/agent_interface: REPL/agent_interface: tools/' $SERENA_HOME/serena_config.yml
+```
+
+Serena v2 also renamed `activate_project`'s `session_id` parameter to `session`;
+`SerenaMcpService.activateProject()` sends the v2 name.
+
+Verify after a rebuild:
+
+```bash
+docker logs lazydev-serena 2>&1 | grep "agent interface"
+# → Using agent interface 'tools' (global configuration)
+docker logs lazydev-serena 2>&1 | grep "Starting MCP server with"
+# → Starting MCP server with 30 tools: [create_text_file, read_file, ...]
+```
+
+If you see `Using agent interface 'REPL'` or `Starting MCP server with 3 tools`,
+the image is stale — rebuild with `docker compose build serena` and recreate the
+container. Consider pinning a Serena release/tag in `Dockerfile.serena` to make
+builds reproducible.
+
 ### Docker socket & permissions
 
 The app NEVER mounts the raw `/var/run/docker.sock`. Instead, a

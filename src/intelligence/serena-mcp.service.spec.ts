@@ -216,3 +216,77 @@ describe('SerenaMcpService — memory methods (Serena 1.28.1 schema)', () => {
     });
   });
 });
+
+/**
+ * Serena v2 renamed `activate_project`'s `session_id` argument to `session`.
+ * The wrapper must fetch the session id minted by `initial_instructions`
+ * ("Your Serena session id is `<id>`") and send it as `session`.
+ */
+describe('SerenaMcpService — session handshake for activate_project (Serena v2)', () => {
+  let service: SerenaMcpService;
+  let callTool: jest.Mock;
+
+  const instructionsResult = (id: string) => ({
+    isError: false,
+    content: [
+      {
+        type: 'text',
+        text: `Manual...\nYour Serena session id is \`${id}\`. Pass it as the \`session\` parameter to tools which require it.`,
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    service = new SerenaMcpService();
+    callTool = jest.fn().mockImplementation(({ name }: { name: string }) => {
+      if (name === 'initial_instructions')
+        return Promise.resolve(instructionsResult('sess-1'));
+      return Promise.resolve({ isError: false });
+    });
+    (service as unknown as { client: unknown }).client = { callTool };
+  });
+
+  it('activateProject fetches a session id once and sends it as session', async () => {
+    await service.activateProject('/app/repo-cache/acme/widgets');
+    await service.activateProject('/app/worktrees/job-1');
+
+    expect(callTool).toHaveBeenCalledWith({
+      name: 'initial_instructions',
+      arguments: {},
+    });
+    expect(callTool).toHaveBeenCalledWith({
+      name: 'activate_project',
+      arguments: {
+        project: '/app/repo-cache/acme/widgets',
+        session: 'sess-1',
+      },
+    });
+    // Session is cached — initial_instructions called exactly once.
+    expect(
+      callTool.mock.calls.filter(
+        (c: unknown[]) =>
+          (c[0] as { name: string }).name === 'initial_instructions',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('refreshes the session once and retries when the server rejects it', async () => {
+    let activateCalls = 0;
+    callTool.mockImplementation(({ name }: { name: string }) => {
+      if (name === 'initial_instructions')
+        return Promise.resolve(instructionsResult('fresh-2'));
+      activateCalls += 1;
+      if (activateCalls === 1)
+        return Promise.reject(new Error('session expired'));
+      return Promise.resolve({ isError: false });
+    });
+
+    await service.activateProject('/app/worktrees/job-1');
+
+    expect(activateCalls).toBe(2);
+    expect(callTool).toHaveBeenLastCalledWith({
+      name: 'activate_project',
+      arguments: { project: '/app/worktrees/job-1', session: 'fresh-2' },
+    });
+  });
+});
