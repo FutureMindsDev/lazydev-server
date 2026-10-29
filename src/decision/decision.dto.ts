@@ -100,6 +100,7 @@ export type ValidationAction =
 export type FailureClass =
   | 'test_failure'
   | 'type_error'
+  | 'syntax_error'
   | 'lint_error'
   | 'environment_failure'
   | 'missing_dependency'

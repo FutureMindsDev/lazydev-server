@@ -99,6 +99,27 @@ export class ValidationAgent {
         const feedback = result.stderr || result.stdout || 'Unknown validation error.';
         this.logger.warn(`Validation failed (language: ${result.language}): ${feedback}`);
 
+        // Deterministic syntax/parse errors in the patched code: truncated
+        // JSX, unclosed tags, missing brackets, etc. These are ALWAYS the
+        // patch's fault (incomplete LLM output), never the environment's.
+        // Catch them before Gate C so the retry is immediate — asking a
+        // decision model to classify "Expected '</'" adds latency and risks
+        // a misclassification to 'unknown' → 'request_human_review'.
+        if (this.isSyntaxError(feedback)) {
+          this.logger.warn(
+            'Deterministic syntax/parse error detected in patched code — retrying patch.',
+          );
+          return {
+            isValid: false,
+            validationFeedback:
+              '[Syntax error — the patch produced invalid code (truncated output, unclosed ' +
+              'tags, or missing brackets). The file must be fully rewritten with correct JSX/TSX.]\n' +
+              feedback,
+            validationAttempts: attempts,
+            messages: [new SystemMessage(`Validation failed (syntax error):\n${feedback}`)],
+          };
+        }
+
         // Deterministic environment failures: sandbox timeouts, disk/cache
         // exhaustion, image/network trouble. Retrying patch generation cannot
         // fix any of these — it just burns another full timeout (and another
@@ -186,6 +207,28 @@ export class ValidationAgent {
   }
 
   /**
+   * True for build/compile errors that are clearly caused by malformed
+   * patched code — truncated JSX, unclosed tags, missing brackets, etc.
+   * These are always the patch's fault (the LLM's output was incomplete),
+   * never the environment's, and should route straight to retry_patch
+   * without asking Gate C (which tends to misclassify them as 'unknown').
+   */
+  private isSyntaxError(feedback: string): boolean {
+    return (
+      // Turbopack / SWC / esbuild parse failures
+      /Expected\s+['"]<\/['"],?\s*got\s+['"]<eof>['"]/i.test(feedback) ||
+      /Parsing ecmascript source code failed/i.test(feedback) ||
+      /Unterminated JSX (contents|element)/i.test(feedback) ||
+      // Babel / tsc parse errors
+      /SyntaxError:\s*(Unexpected token|Unexpected end of input)/i.test(feedback) ||
+      /Unexpected token.*Expected.*[;})>]/i.test(feedback) ||
+      // Generic truncation indicators: EOF in the middle of a construct
+      /error.*unexpected.*eof/i.test(feedback) ||
+      /error.*unterminated.*string|template literal/i.test(feedback)
+    );
+  }
+
+  /**
    * True for failures that are about the sandbox/host, not the patch.
    * These must never enter the patch-retry loop.
    */
@@ -226,6 +269,7 @@ export class ValidationAgent {
           options: [
             'test_failure',
             'type_error',
+            'syntax_error',
             'lint_error',
             'environment_failure',
             'missing_dependency',
@@ -265,7 +309,7 @@ export class ValidationAgent {
         ) as ValidationAction,
         failureClass: pick(
           'failureClass',
-          ['test_failure', 'type_error', 'lint_error', 'environment_failure', 'missing_dependency', 'incorrect_patch', 'unknown'],
+          ['test_failure', 'type_error', 'syntax_error', 'lint_error', 'environment_failure', 'missing_dependency', 'incorrect_patch', 'unknown'],
           'unknown',
         ) as FailureClass,
         confidence: a['action']?.probability ?? 0.5,

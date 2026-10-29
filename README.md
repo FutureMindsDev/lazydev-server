@@ -276,6 +276,21 @@ the image is stale — rebuild with `docker compose build serena` and recreate t
 container. Consider pinning a Serena release/tag in `Dockerfile.serena` to make
 builds reproducible.
 
+#### Prebuilt image (Docker Hub)
+
+A prebuilt build of this sidecar is published on Docker Hub:
+
+**[hub.docker.com/r/yuutakun2/lazydev-serena](https://hub.docker.com/r/yuutakun2/lazydev-serena)**
+
+```bash
+docker pull yuutakun2/lazydev-serena:latest
+```
+
+The published image is **arm64 only** (built on Apple Silicon) — on x86_64
+hosts, build locally with `docker compose build serena` instead. It is built
+from [`Dockerfile.serena`](Dockerfile.serena), so it already ships the
+`agent_interface: tools` configuration described above.
+
 ### Docker socket & permissions
 
 The app NEVER mounts the raw `/var/run/docker.sock`. Instead, a
