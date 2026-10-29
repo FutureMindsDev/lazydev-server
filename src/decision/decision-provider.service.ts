@@ -13,7 +13,7 @@
  */
 
 /* eslint-disable */
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import {
@@ -52,9 +52,11 @@ const NOT_IMPLEMENTED: DecisionProviderId[] = [
 const CLEF_FLAG_KEY = 'settings:guard:clef';
 
 @Injectable()
-export class DecisionProviderService implements OnModuleDestroy {
+export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DecisionProviderService.name);
   private readonly redis: Redis;
+  /** Providers that have answered at least once this process (log once). */
+  private readonly connected = new Set<DecisionProviderId>();
 
   constructor(private readonly configService: ConfigService) {
     this.redis = new Redis({
@@ -72,6 +74,70 @@ export class DecisionProviderService implements OnModuleDestroy {
 
   async onModuleDestroy() {
     await this.redis.quit().catch(() => undefined);
+  }
+
+  /**
+   * Boot-time visibility for the System One layer: who serves each gate,
+   * whether the Clef switch and credentials are usable, and — when Clef is
+   * actually on — one tiny smoke request so "connected" is a fact, not a
+   * guess. Never throws: a dead provider degrades to the caller's heuristic.
+   */
+  async onModuleInit(): Promise<void> {
+    const gates: DecisionGate[] = ['guard', 'triage', 'patch', 'validation'];
+    const routes = gates.map((g) => `${g}=${this.resolveProviderId(g)}`).join(', ');
+    const fallback = this.resolveFallbackId();
+    const clefEnabled = await this.isClefEnabled();
+    const clefConfigured = this.areClefCredsPresent();
+    const clefModel = this.clefModelName();
+
+    this.logger.log(
+      `System One decision layer — ${routes}; fallback=${fallback}; ` +
+        `Clef: ${clefEnabled ? 'enabled' : 'disabled'}` +
+        (clefEnabled
+          ? ` (model=${clefModel}, creds ${clefConfigured ? 'present' : 'MISSING'})`
+          : ''),
+    );
+
+    if (!clefEnabled) {
+      this.logger.log(
+        'System One: Clef is off (PROMPT_GUARD_CLEF_ENABLED=false) — Layer-1 screening ' +
+          'skipped; gates naming clef-workers use the fallback or their local heuristic.',
+      );
+      return;
+    }
+    if (!clefConfigured) {
+      this.logger.warn(
+        'System One: Clef is enabled but CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN ' +
+          'are missing — every Clef call will fail and gates will fall back. ' +
+          'Set them or disable Clef.',
+      );
+      return;
+    }
+
+    // Smoke test: one noul question with a short timeout and no fallback
+    // chain — proves account/token/model work without exercising gate logic.
+    try {
+      await new ClefProvider({
+        accountId: this.configService.get<string>('CLOUDFLARE_ACCOUNT_ID', ''),
+        apiToken: this.configService.get<string>('CLOUDFLARE_API_TOKEN', ''),
+        model: clefModel,
+        timeoutMs: 5000,
+      }).decide('System One startup health check.', [
+        { id: 'ok', type: 'bool', text: 'Is this a health check?' },
+      ]);
+      this.logger.log(`System One [CLEF-WORKERS/${clefModel}] connected successfully ✅`);
+    } catch (e: any) {
+      this.logger.warn(
+        `System One [CLEF-WORKERS/${clefModel}] smoke-test failed: ${e.message} — ` +
+          'gates will fall back until this recovers.',
+      );
+    }
+  }
+
+  private clefModelName(): 'clef' | 'clef-flash' {
+    return this.configService.get<string>('PROMPT_GUARD_MODEL', 'clef-flash') === 'clef'
+      ? 'clef'
+      : 'clef-flash';
   }
 
   /** Which provider serves this gate. Order: per-gate env override →
@@ -110,7 +176,7 @@ export class DecisionProviderService implements OnModuleDestroy {
         return new ClefProvider({
           accountId: this.configService.get<string>('CLOUDFLARE_ACCOUNT_ID', ''),
           apiToken: this.configService.get<string>('CLOUDFLARE_API_TOKEN', ''),
-          model: this.configService.get<string>('PROMPT_GUARD_MODEL', 'clef-flash'),
+          model: this.clefModelName(),
         });
       case 'jev-typesafe':
       case 'jev-vercel':
@@ -194,7 +260,15 @@ export class DecisionProviderService implements OnModuleDestroy {
       for (let attempt = 0; ; attempt++) {
         try {
           const result = await this.buildProvider(id).decide(state, questions);
-          this.logger.debug(`Decision (${gate}) served by ${result.providerId}.`);
+          if (!this.connected.has(result.providerId)) {
+            this.connected.add(result.providerId);
+            this.logger.log(
+              `System One [${result.providerId.toUpperCase()}] connected ✅ ` +
+                `(answered a ${gate} decision).`,
+            );
+          } else {
+            this.logger.debug(`Decision (${gate}) served by ${result.providerId}.`);
+          }
           return result;
         } catch (e: any) {
           lastError = e;
@@ -273,7 +347,7 @@ export class DecisionProviderService implements OnModuleDestroy {
       regexAlwaysOn: true,
       clefEnabled: await this.isClefEnabled(),
       clefConfigured: this.areClefCredsPresent(),
-      clefModel: this.configService.get<string>('PROMPT_GUARD_MODEL', 'clef-flash'),
+      clefModel: this.clefModelName(),
       blockAt: num(this.configService.get<string>('PROMPT_GUARD_BLOCK_AT'), 0.8),
       quarantineAt: num(this.configService.get<string>('PROMPT_GUARD_QUARANTINE_AT'), 0.4),
       provider: this.resolveProviderId('guard'),

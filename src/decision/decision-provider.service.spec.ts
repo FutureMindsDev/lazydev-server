@@ -32,6 +32,15 @@ describe('DecisionProviderService', () => {
       void svc.onModuleDestroy();
     });
 
+    it('boots (and logs status) without calling Clef when it is disabled', async () => {
+      const svc = new DecisionProviderService(
+        fakeConfig({ PROMPT_GUARD_CLEF_ENABLED: 'false' }),
+      );
+      // Disabled Clef must short-circuit before any Redis read or HTTP call.
+      await expect(svc.onModuleInit()).resolves.toBeUndefined();
+      void svc.onModuleDestroy();
+    });
+
     it('prefers per-gate override, then DECISION_PROVIDER', () => {
       const svc = new DecisionProviderService(
         fakeConfig({ DECISION_PROVIDER: 'jev-typesafe', DECISION_PROVIDER_TRIAGE: 'llm-judge' }),
