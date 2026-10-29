@@ -77,6 +77,34 @@ function extractAnyMcpText(result: unknown): string {
   return JSON.stringify(result);
 }
 
+/**
+ * `replace_symbol_body` replaces the symbol's complete definition, not the
+ * whole file. Models sometimes pass the entire file (directive + imports +
+ * interfaces + function), which duplicates all of that in place and produces
+ * exactly these build errors: `"use client" directive must be placed before
+ * other expressions` and `React is defined multiple times`. Reject that
+ * shape and tell the model what to send instead, so it can self-correct in
+ * the same tool loop.
+ */
+function guardReplacementBody(newBody: string): string | null {
+  if (/(^|\n)\s*["']use (client|server)["']\s*;/.test(newBody)) {
+    return (
+      'Blocked: `newBody` must contain ONLY the new symbol definition. ' +
+      'Do not include the file-level "use client"/"use server" directive — it already ' +
+      'exists at the top of the file, and duplicating it breaks the build. Retry with ' +
+      'just the function/class definition.'
+    );
+  }
+  if (/(^|\n)\s*import\s+(?:[^;\n]*\bfrom\s+)?["'][^"'\n]+["']/.test(newBody)) {
+    return (
+      'Blocked: `newBody` must contain ONLY the new symbol definition. Do not include ' +
+      'import statements — they already exist at the top of the file, and duplicates ' +
+      'break the build. Retry with just the function/class definition.'
+    );
+  }
+  return null;
+}
+
 @Injectable()
 export class PatchGeneratorAgent {
   private readonly logger = new Logger(PatchGeneratorAgent.name);
@@ -172,7 +200,9 @@ export class PatchGeneratorAgent {
           `2. The plan's file paths and symbol names are a hypothesis, not verified fact — they were written before anyone confirmed them against the real file. If a symbol name from the plan doesn't match what you find, use the ACTUAL name from the file (use find_symbol to resolve it). NEVER rename or restructure existing code just to make it match the plan.\n` +
           `3. For files the plan says to create, the plan's path is the decision — use create_text_file. It fails if the path already exists; use an edit tool instead in that case.\n` +
           `4. Match the existing code's style, exports, and patterns. Do not rewrite working code beyond what the plan asks for.\n` +
-          `5. When every change from the plan has been applied, respond with a short plain-text summary and stop calling tools.`,
+          `5. When every change from the plan has been applied, respond with a short plain-text summary and stop calling tools.\n` +
+          `6. Do NOT claim the task is complete, that tests pass, or that the fix works — you do not run tests and validation happens after you. Summarize only the changes you actually applied.\n` +
+          `7. replace_symbol_body replaces ONE symbol's complete definition only. Never pass the whole file: no "use client"/"use server" directives, no import statements, and no other symbols/interfaces — the file already has them and duplicates break the build.`,
       );
 
       let userPromptContent =
@@ -445,7 +475,10 @@ export class PatchGeneratorAgent {
     const replaceSymbolBody = new DynamicStructuredTool({
       name: 'replace_symbol_body',
       description:
-        'Replace the entire body of an existing function/class/etc with new code. Requires read_file on this file first. Provide the COMPLETE new body — do not omit unrelated lines.',
+        "Replace one existing symbol's complete definition (e.g. `export function Foo(...) { ... }`) with new code. " +
+        'Requires read_file on this file first. Provide ONLY that symbol definition — never the whole file. ' +
+        'Do NOT include file-level directives ("use client"/"use server"), imports, or other symbols: ' +
+        'they already exist and duplicating them breaks the build.',
       schema: z.object({
         filePath: z.string(),
         symbolName: z
@@ -453,7 +486,11 @@ export class PatchGeneratorAgent {
           .describe(
             'Exact symbol name as it appears in the file (verify with read_file or find_symbol — do not guess).',
           ),
-        newBody: z.string().describe('The complete replacement source for this symbol.'),
+        newBody: z
+          .string()
+          .describe(
+            'The complete replacement definition for this symbol only (signature + body). No file preamble/imports.',
+          ),
       }),
       func: async ({
         filePath,
@@ -463,13 +500,21 @@ export class PatchGeneratorAgent {
         filePath: string;
         symbolName: string;
         newBody: string;
-      }) =>
-        runSymbolEdit(
+      }) => {
+        const guard = guardReplacementBody(newBody);
+        if (guard) {
+          session.blockedActions.push(
+            `MODIFY ${filePath} | ${symbolName}: file-level preamble included in symbol body`,
+          );
+          return guard;
+        }
+        return runSymbolEdit(
           filePath,
           symbolName,
           () => this.serenaMcp.replaceSymbolBody(filePath, symbolName, newBody),
           `MODIFY ${filePath} | ${symbolName}`,
-        ),
+        );
+      },
     });
 
     const insertAfterSymbol = new DynamicStructuredTool({

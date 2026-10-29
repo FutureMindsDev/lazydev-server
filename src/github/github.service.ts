@@ -64,6 +64,23 @@ export class GithubService implements OnModuleInit {
   }
 
   /**
+   * Short-lived authenticated HTTPS URL for git fetch/push on an installed
+   * repo. Format: https://x-access-token:<token>@github.com/owner/repo.git
+   * Callers MUST scrub the token from the remote config after use.
+   */
+  async getAuthenticatedRepoUrl(
+    owner: string,
+    repo: string,
+    installationId: number,
+  ): Promise<string> {
+    const octokit = await this.getInstallationOctokit(installationId);
+    const { data } = await octokit.rest.apps.createInstallationAccessToken({
+      installation_id: installationId,
+    });
+    return `https://x-access-token:${data.token}@github.com/${owner}/${repo}.git`;
+  }
+
+  /**
    * Resolves the installation id for a repository. Needed by MCP tools, which
    * receive only an "owner/repo" string and have no webhook payload to read
    * `installation.id` from.

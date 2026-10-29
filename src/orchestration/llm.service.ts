@@ -111,9 +111,16 @@ function applyPatch(completionsModule: any): boolean {
       const converted = result[i];
       if (converted?.role !== 'assistant') continue;
 
-      // Re-attach reasoning_content (DeepSeek thinking mode).
-      if (msg?.additional_kwargs?.reasoning_content) {
-        converted.reasoning_content = msg.additional_kwargs.reasoning_content;
+      // Re-attach reasoning_content (DeepSeek thinking mode). Check for
+      // presence, not truthiness: DeepSeek returns reasoning_content: "" on
+      // some assistant turns (notably a final text-only response after tool
+      // results), and it requires the KEY to be echoed back on retries even
+      // when the value is empty. A truthy check silently drops it, producing:
+      //   400 The `reasoning_content` in the thinking mode must be passed back.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      const reasoningContent = msg?.additional_kwargs?.reasoning_content;
+      if (reasoningContent !== undefined) {
+        converted.reasoning_content = reasoningContent;
       }
 
       // Re-attach extra_content on tool calls (Gemini thought signatures).

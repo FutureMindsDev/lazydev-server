@@ -89,6 +89,7 @@ describe('DecisionProviderService', () => {
       const svc = new DecisionProviderService(
         fakeConfig({ DECISION_PROVIDER: 'jev-typesafe' }),
       );
+      jest.spyOn(svc, 'isClefEnabled').mockResolvedValue(true);
       // jev (no key) → clef-workers (no creds) → throw. The error must
       // come from Clef, proving llm-judge was never touched implicitly.
       await expect(
@@ -104,11 +105,41 @@ describe('DecisionProviderService', () => {
           DECISION_FALLBACK: 'llm-judge',
         }),
       );
+      jest.spyOn(svc, 'isClefEnabled').mockResolvedValue(true);
       // laya (not built) → clef (no creds) → llm-judge (no key) → throw
       // with the llm-judge error, proving explicit opt-in runs it.
       await expect(
         svc.decide('guard', 's', [{ id: 'q', type: 'bool', text: 't' }]),
       ).rejects.toThrow(/OPENAI_API_KEY/);
+      void svc.onModuleDestroy();
+    });
+
+    it('skips Clef entirely when it is disabled', async () => {
+      const svc = new DecisionProviderService(
+        fakeConfig({
+          PROMPT_GUARD_CLEF_ENABLED: 'false',
+          DECISION_PROVIDER: 'clef-workers',
+          DECISION_FALLBACK: 'llm-judge',
+        }),
+      );
+      // Clef would fail with CLOUDFLARE (no creds); the llm-judge error
+      // proves the disabled provider was never attempted.
+      await expect(
+        svc.decide('guard', 's', [{ id: 'q', type: 'bool', text: 't' }]),
+      ).rejects.toThrow(/OPENAI_API_KEY/);
+      void svc.onModuleDestroy();
+    });
+
+    it('does not fall back to Clef when the primary is not Clef and Clef is disabled', async () => {
+      const svc = new DecisionProviderService(
+        fakeConfig({
+          PROMPT_GUARD_CLEF_ENABLED: 'false',
+          DECISION_PROVIDER: 'jev-typesafe',
+        }),
+      );
+      await expect(
+        svc.decide('guard', 's', [{ id: 'q', type: 'bool', text: 't' }]),
+      ).rejects.toThrow(/TYPESAFE_API_KEY/);
       void svc.onModuleDestroy();
     });
   });

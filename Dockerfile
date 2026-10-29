@@ -1,8 +1,10 @@
 # Base image
 FROM node:20-alpine AS base
 
-# Install necessary system dependencies for building native modules or running sandbox tools
-RUN apk add --no-cache python3 make g++ git docker-cli ripgrep
+# Install necessary system dependencies for building native modules, running
+# sandbox tools, and cross-UID worktree cleanup. `acl` lets the unprivileged
+# app user delete Serena's root-owned .serena metadata (see WorktreeManager).
+RUN apk add --no-cache python3 make g++ git docker-cli ripgrep acl
 
 # Dependencies stage
 FROM base AS deps

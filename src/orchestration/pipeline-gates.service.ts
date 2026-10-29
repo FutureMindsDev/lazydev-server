@@ -270,6 +270,7 @@ export class PipelineGatesService {
 
     const patchText = state.generatedPatch || '';
     const unapplied = (state.unappliedChanges || '').trim();
+    const hasUnapplied = unapplied.length > 0;
     const files = this.changedFiles(`${patchText}\n${unapplied}`);
     const testsTouched = files.some((f) => /test|spec|__tests__/i.test(f));
     const depTouched = files.filter((f) =>
@@ -285,14 +286,20 @@ export class PipelineGatesService {
 
     const reasons: string[] = [];
     if (files.length === 0) reasons.push('no file changes detected in patch summary');
-    if (unapplied) reasons.push('some edits failed to apply');
+    // NOTE: `unapplied` is deliberately NOT a risk reason. It also contains
+    // self-corrected/optional failures (e.g. "delete this unused image" when
+    // the file is binary). Treating it as a safety flag sent one-file patches
+    // to the model, which kept answering retry_patch even though the applied
+    // change was complete — burning the whole retry budget without ever
+    // changing anything. The PR body still surfaces it to a human.
     if (depTouched.length > 0) reasons.push(`dependency files touched: ${depTouched.join(', ')}`);
     if (protectedHit) reasons.push(`protected path matched: ${protectedHit}`);
     if (securitySensitive) reasons.push('security-sensitive issue or patch content');
 
     // 2. Retry cap FIRST (before the cheap path): a patcher sent back too
     // many times stops for a human, no matter how clean it looks now.
-    if (attempts > MAX_PATCH_GATE_RETRIES + 1) {
+    // MAX = number of send-backs; abort on the next visit.
+    if (attempts > MAX_PATCH_GATE_RETRIES) {
       await this.quarantine(state, 'patch-gate', '', '',
         `patch sent back ${MAX_PATCH_GATE_RETRIES} times without converging`);
       return {
@@ -304,13 +311,14 @@ export class PipelineGatesService {
     }
 
     // 3. Cheap path: small, clean, non-sensitive patch — no model call.
+    // Unapplied notes only raise the risk label; they do not block validation.
     if (
       reasons.length === 0 &&
       files.length > 0 &&
       files.length <= 2
     ) {
       return {
-        patchRisk: 'low',
+        patchRisk: hasUnapplied ? 'medium' : 'low',
         patchGateAttempts: attempts,
         patchGateDecision: 'validate',
       } as Partial<AgentState>;
@@ -327,7 +335,10 @@ export class PipelineGatesService {
         {
           id: 'decision',
           type: 'choice',
-          text: 'Given this patch evidence, what should happen next?',
+          text:
+            'Given this patch evidence, what should happen next? Choose retry_patch ' +
+            'ONLY when the APPLIED patch is unsafe or clearly missing a required change. ' +
+            'Unapplied optional/cleanup edits are not a reason to retry.',
           options: ['validate', 'retry_patch', 'request_human_review', 'abort'],
         },
         {
@@ -341,8 +352,22 @@ export class PipelineGatesService {
       const risk = (result.answers['risk']?.option || 'medium') as string;
       const confidence = result.answers['decision']?.probability ?? 0.5;
       // Fail closed on low confidence: treat as medium (validate + review note).
-      const finalDecision: PatchDecision =
+      let finalDecision: PatchDecision =
         confidence < 0.4 && decision === 'validate' ? 'request_human_review' : decision;
+      // Pure "unapplied notes" with no actual safety flag: validating the
+      // applied patch is enough. A retry here cannot converge — the next
+      // patcher run sees the same worktree and just says "already done".
+      if (
+        finalDecision === 'retry_patch' &&
+        reasons.length === 0 &&
+        hasUnapplied &&
+        files.length > 0
+      ) {
+        this.logger.log(
+          'Patch gate: ignoring retry for unapplied notes — no safety flag, validating applied patch.',
+        );
+        finalDecision = 'validate';
+      }
       if (finalDecision === 'request_human_review' || finalDecision === 'abort') {
         await this.quarantine(state, 'patch-gate', '', '',
           `decision=${finalDecision} risk=${risk}: ${reasons.slice(0, 5).join('; ') || 'see evidence'}`);

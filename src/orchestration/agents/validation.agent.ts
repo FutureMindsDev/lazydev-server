@@ -77,12 +77,16 @@ export class ValidationAgent {
       if (result.success) {
         this.logger.log(`Patch validation passed (language: ${result.language}).`);
         
-        // Asynchronously update lessons learned (non-blocking for returning the state)
+        // Update lessons learned BEFORE returning. GitAgent copies Serena's
+        // memories into the worktree right before committing; a fire-and-forget
+        // write races that snapshot and the new lesson misses the commit.
         if (process.env.ENABLE_SERENA_ISSUE_HISTORY === 'true') {
           const repoPath = state.issuePayload?.repoPath;
-          this.updateLessonsLearned(state, worktreePath, repoPath).catch(err => {
+          try {
+            await this.updateLessonsLearned(state, worktreePath, repoPath);
+          } catch (err) {
             this.logger.error('Failed to update historical_issues_and_lessons:', err);
-          });
+          }
         }
 
         return {
@@ -94,6 +98,33 @@ export class ValidationAgent {
       } else {
         const feedback = result.stderr || result.stdout || 'Unknown validation error.';
         this.logger.warn(`Validation failed (language: ${result.language}): ${feedback}`);
+
+        // Deterministic environment failures: sandbox timeouts, disk/cache
+        // exhaustion, image/network trouble. Retrying patch generation cannot
+        // fix any of these — it just burns another full timeout (and another
+        // 100-step graph run) before failing the same way. Stop for a human.
+        if (this.isEnvironmentFailure(feedback)) {
+          const reason =
+            'Validation could not run (environment failure): ' +
+            feedback.split('\n')[0].slice(0, 300);
+          this.logger.warn(reason);
+          const taskId = state.issuePayload?.taskId;
+          if (taskId) {
+            await this.feedback.storeGateStatus(taskId, {
+              stoppedBy: 'validation-gate',
+              decision: 'abort',
+              reason,
+            });
+          }
+          return {
+            isValid: false,
+            validationFeedback: feedback,
+            validationAttempts: attempts,
+            abortReason: reason,
+            messages: [new SystemMessage(`Validation stopped:\n${feedback}`)],
+          };
+        }
+
         // Gate C: classify the failure BEFORE deciding the retry, so an
         // environment problem never blames the patch (and vice versa).
         const gate = await this.classifyFailure(feedback, String(result.language), attempts);
@@ -152,6 +183,20 @@ export class ValidationAgent {
         messages: [new SystemMessage(`Validation failed:\n${e.message}`)],
       };
     }
+  }
+
+  /**
+   * True for failures that are about the sandbox/host, not the patch.
+   * These must never enter the patch-retry loop.
+   */
+  private isEnvironmentFailure(feedback: string): boolean {
+    return (
+      /Sandbox execution timed out/i.test(feedback) ||
+      /ENOSPC|no space left on device/i.test(feedback) ||
+      (/EEXIST/i.test(feedback) && /(_cacache|\.npm)/i.test(feedback)) ||
+      /Unable to find image|Cannot connect to the Docker daemon/i.test(feedback) ||
+      /npm error code (ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT)/i.test(feedback)
+    );
   }
 
   /**
