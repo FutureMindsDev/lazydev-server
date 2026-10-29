@@ -188,6 +188,15 @@ export class IngestionService {
         verdict === 'malicious' || verdict === 'suspicious'
           ? `${verdict} (${verProb.toFixed(2)})`
           : `malicious-probability ${malProb.toFixed(2)}`;
+      // Keep the raw numbers in the log: the previous fallback made every
+      // issue look like a constant 0.50, and there was no way to tell a
+      // real score from a parse miss.
+      this.logger.debug(
+        `Clef guard score ${score.toFixed(2)} ` +
+          `(malicious=${malProb.toFixed(2)}, verdict=${verdict ?? 'unknown'} ${verProb.toFixed(2)}) ` +
+          `— blockAt=${status.blockAt}, quarantineAt=${status.quarantineAt}`,
+      );
+
       if (score >= status.blockAt) {
         this.logger.warn(
           `Clef blocked issue #${issueNumber} in ${repoName}: ${label}. Job NOT queued.`,

@@ -173,6 +173,36 @@ describe('ClefProvider request shape', () => {
     expect(result.answers['malicious']).toEqual({ option: 'no', probability: 0.95 });
   });
 
+  it('maps a benign noul answer to a low score, not the old 0.5 fallback', async () => {
+    const { ClefProvider } = require('./providers/clef.provider');
+    const fetchFn = jest.fn().mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({
+        result: {
+          answers: {
+            malicious: { type: 'noul', noul: 0.02 },
+            verdict: {
+              type: 'choice',
+              choice: 'benign',
+              probabilities: { benign: 0.95, suspicious: 0.04, malicious: 0.01 },
+              confidence: 0.95,
+            },
+          },
+        },
+      }),
+    }));
+    const provider = new ClefProvider({ accountId: 'acc', apiToken: 'tok', fetchFn });
+    const result = await provider.decide('s', [
+      { id: 'malicious', type: 'bool', text: 'bad?' },
+      { id: 'verdict', type: 'choice', text: 'classify', options: ['benign', 'suspicious', 'malicious'] },
+    ]);
+    expect(result.answers['malicious']).toEqual({ option: 'no', probability: 0.02 });
+    expect(result.answers['verdict']).toEqual({ option: 'benign', probability: 0.95 });
+    // The ingestion guard score uses malProb directly: 0.02 must stay below
+    // the default quarantine line (0.4), not equal it.
+    expect(result.answers['malicious'].probability).toBeLessThan(0.4);
+  });
+
   it('maps questions to the published Clef schema (noul/choice+score)', async () => {
     const { ClefProvider } = require('./providers/clef.provider');
     let sentBody: any = null;
@@ -232,8 +262,53 @@ describe('parseClefAnswer', () => {
     });
   });
 
-  it('never returns NaN', () => {
-    expect(parseClefAnswer({ option: 'x', probability: 'junk' }, boolQ).probability).toBe(0.5);
+  it('reads the published Clef answer shapes (noul/choice/score)', () => {
+    expect(parseClefAnswer({ type: 'noul', noul: 0.02 }, boolQ)).toEqual({
+      option: 'no',
+      probability: 0.02,
+    });
+    expect(parseClefAnswer({ type: 'noul', noul: 0.93 }, boolQ)).toEqual({
+      option: 'yes',
+      probability: 0.93,
+    });
+
+    const choiceQ = {
+      id: 'v',
+      type: 'choice' as const,
+      text: 't',
+      options: ['benign', 'malicious'],
+    };
+    // confidence (0.7) is NOT P(chosen option) (0.9) — use probabilities.
+    expect(
+      parseClefAnswer(
+        {
+          type: 'choice',
+          choice: 'malicious',
+          probabilities: { benign: 0.1, malicious: 0.9 },
+          confidence: 0.7,
+        },
+        choiceQ,
+      ),
+    ).toEqual({ option: 'malicious', probability: 0.9 });
+
+    expect(
+      parseClefAnswer(
+        {
+          type: 'score',
+          score: 0.25,
+          legend: { '0': 'low', '1': 'high' },
+          probabilities: { '0': 0.75, '1': 0.25 },
+          confidence: 0.6,
+        },
+        scoreQ,
+      ),
+    ).toEqual({ value: 0.25, probability: 0.25 });
+  });
+
+  it('never invents a probability (unknown = 0, not 0.5)', () => {
+    expect(parseClefAnswer({ option: 'x', probability: 'junk' }, boolQ).probability).toBe(0);
+    expect(parseClefAnswer({ type: 'noul' }, boolQ).probability).toBe(0);
+    expect(parseClefAnswer('no', boolQ)).toEqual({ option: 'no', probability: 0 });
     expect(parseClefAnswer(undefined, boolQ).probability).toBe(0);
   });
 });

@@ -44,27 +44,51 @@ export interface ClefProviderOptions {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
-function num(value: unknown, fallback: number): number {
+function num(value: unknown, fallback = 0): number {
   const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
 }
 
-/** Pull one normalized answer out of Clef's per-question result, trying
- *  every field name the docs and playground samples suggest. */
+/** Pull one normalized answer out of Clef's per-question result following
+ *  the published schema (schema-output.json):
+ *
+ *    noul   -> { type: 'noul', noul: 0..1 }              (probability of yes)
+ *    choice -> { type: 'choice', choice, probabilities } (P per option)
+ *    score  -> { type: 'score', score: 0..1, ... }       (weighted level)
+ *
+ *  Never invent a probability when the provider sent none: the old 0.5
+ *  fallback sat above the default quarantine line (0.4), so every parse
+ *  miss silently failed closed. Unknown = 0 = "let the human-visible
+ *  Layer 0 verdict stand". */
 export function parseClefAnswer(
   raw: unknown,
   question: DecisionQuestion,
 ): DecisionAnswer {
   if (typeof raw === 'number') {
-    // Bare score.
-    if (question.type === 'score') return { value: num(raw, 0.5), probability: num(raw, 0.5) };
-    return { option: raw >= 0.5 ? 'yes' : 'no', probability: num(raw, 0.5) };
+    // Bare score (legacy/plain-LLM providers; Clef itself sends objects).
+    const p = num(raw);
+    if (question.type === 'score') return { value: p, probability: p };
+    return { option: p >= 0.5 ? 'yes' : 'no', probability: p };
   }
   if (typeof raw === 'string') {
-    return { option: raw, probability: 0.5 };
+    // Label with no number attached — report it as unknown, not 0.5.
+    return { option: raw, probability: 0 };
   }
   if (raw && typeof raw === 'object') {
     const o = raw as Record<string, unknown>;
+
+    // Yes/no: Clef answers with the probability of "yes".
+    if (question.type === 'bool' && typeof o['noul'] === 'number') {
+      const p = num(o['noul']);
+      return { option: p >= 0.5 ? 'yes' : 'no', probability: p };
+    }
+
+    // Score: already a probability-weighted level on our 0..1 scale.
+    if (question.type === 'score' && typeof o['score'] === 'number') {
+      const p = num(o['score']);
+      return { value: p, probability: p };
+    }
+
     const option =
       typeof o['option'] === 'string'
         ? (o['option'] as string)
@@ -77,11 +101,17 @@ export function parseClefAnswer(
               : undefined;
     const value =
       typeof o['value'] === 'number' || typeof o['value'] === 'string'
-        ? num(o['value'], 0.5)
+        ? num(o['value'])
         : undefined;
+    // Prefer P(the option Clef actually chose). `confidence` is how sure
+    // the model is overall, NOT the chance that this answer is right.
+    const probabilities =
+      o['probabilities'] && typeof o['probabilities'] === 'object'
+        ? (o['probabilities'] as Record<string, unknown>)
+        : undefined;
+    const chosen = option && probabilities ? probabilities[option] : undefined;
     const probability = num(
-      o['probability'] ?? o['score'] ?? o['confidence'] ?? o['p'],
-      0.5,
+      chosen ?? o['probability'] ?? o['confidence'] ?? o['p'] ?? o['score'],
     );
     if (question.type === 'score') {
       return { value: value ?? probability, probability };
