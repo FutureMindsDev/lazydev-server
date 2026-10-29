@@ -37,8 +37,9 @@ export interface SandboxExecutionResult {
 // build from eating all our memory.
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
 
-// Default + fallback kill timeout: 10 minutes.
-const DEFAULT_TIMEOUT_MS = 600_000;
+// Default + fallback kill timeout: 20 minutes. A cold `npm install` plus a
+// Next/Turbopack production build can exceed 10 minutes on a small host.
+const DEFAULT_TIMEOUT_MS = 1_200_000;
 
 // Strict allow-patterns. Anything outside these is rejected before docker
 // ever runs. This blocks shell-injection tricks like `; rm -rf /` smuggled
@@ -59,13 +60,17 @@ export class SandboxService {
   async executeCommand(
     options: SandboxExecutionOptions,
   ): Promise<SandboxExecutionResult> {
-    const {
-      worktreePath,
-      command,
-      image = 'node:20-alpine',
-      memoryLimit = '512m',
-      cpuLimit = '1.0',
-    } = options;
+    const { worktreePath, command, image = 'node:22-alpine' } = options;
+
+    // Next/Turbopack and other modern builds routinely need >512 MB and more
+    // than one core; the old defaults made validation thrash and hit the
+    // timeout rather than fail on a real code error.
+    const memoryLimit =
+      options.memoryLimit ??
+      this.configService.get<string>('SANDBOX_MEMORY_LIMIT', '2g');
+    const cpuLimit =
+      options.cpuLimit ??
+      this.configService.get<string>('SANDBOX_CPU_LIMIT', '2');
 
     const networkMode = this.configService.get<string>(
       'SANDBOX_NETWORK_MODE',
@@ -116,6 +121,12 @@ export class SandboxService {
       throw new Error(`worktreePath must be absolute: ${worktreePath}`);
     }
 
+    // Fail early with an actionable message when the volume backing the
+    // worktree is full. Without this, npm install surfaces a confusing
+    // `EEXIST ... _cacache` error (its cache mkdir fails at the disk limit)
+    // and every validation attempt wastes minutes before failing the same way.
+    await this.assertDiskSpace(worktreePath);
+
     const isInsideDocker = fs.existsSync('/.dockerenv');
 
     // When running inside Docker, make sure the worktree lives under our
@@ -139,12 +150,20 @@ export class SandboxService {
       }
     }
 
+    // Name the container so the timeout path can stop it for real. Killing
+    // the `docker run` CLI alone does NOT stop the container — it keeps
+    // building in the background and can starve later validation runs.
+    const sandboxContainerName =
+      `lazydev-sandbox-${Date.now().toString(36)}-` +
+      Math.random().toString(36).slice(2, 8);
+
     // Build the docker command as a list of separate words (argv). We run it
     // with shell:false so the OS never interprets special characters — a `;`
     // or `$()` in any value stays plain text instead of running extra commands.
     const argv: string[] = [
       'run',
       '--rm',
+      `--name=${sandboxContainerName}`,
       `--network=${networkMode}`,
       `--memory=${memoryLimit}`,
       `--cpus=${cpuLimit}`,
@@ -183,14 +202,33 @@ export class SandboxService {
       let stdout = '';
       let stderr = '';
       let truncated = false;
+      let settled = false;
+      let killTimer: ReturnType<typeof setTimeout>;
 
-      const killTimer = setTimeout(() => {
+      const settleResolve = (result: SandboxExecutionResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(killTimer);
+        resolve(result);
+      };
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(killTimer);
+        reject(err);
+      };
+
+      killTimer = setTimeout(() => {
+        // Stop the actual container, not just this CLI process.
+        this.stopContainer(sandboxContainerName);
         child.kill('SIGKILL');
+        const outputTail = stderr.slice(-2000).trim();
         const err = new Error(
-          `Sandbox execution timed out after ${timeoutMs}ms and was killed.`,
+          `Sandbox execution timed out after ${timeoutMs}ms and was killed.` +
+            (outputTail ? `\nLast output:\n${outputTail}` : ''),
         );
         this.logger.error(err.message);
-        reject(err);
+        settleReject(err);
       }, timeoutMs);
       // Don't let the timer alone keep the Node process alive.
       killTimer.unref?.();
@@ -223,37 +261,88 @@ export class SandboxService {
           stdoutBytes >= MAX_OUTPUT_BYTES &&
           stderrBytes >= MAX_OUTPUT_BYTES
         ) {
+          this.stopContainer(sandboxContainerName);
           child.kill('SIGKILL');
-        } else if (
-          (kind === 'stdout' && stdoutBytes >= MAX_OUTPUT_BYTES) ||
-          (kind === 'stderr' && stderrBytes >= MAX_OUTPUT_BYTES)
-        ) {
-          // Keep the process running but stop collecting — cap memory use.
         }
       };
 
       child.stdout?.on('data', (c: Buffer) => append(c, 'stdout'));
       child.stderr?.on('data', (c: Buffer) => append(c, 'stderr'));
       child.on('error', (err) => {
-        clearTimeout(killTimer);
         this.logger.error(`Sandbox execution failed: ${err.message}`);
-        reject(new Error(`Sandbox execution failed: ${err.message}`));
+        settleReject(new Error(`Sandbox execution failed: ${err.message}`));
       });
       child.on('close', (code) => {
-        clearTimeout(killTimer);
         const durationMs = Date.now() - startTime;
         if (truncated) {
           stderr += '\n[truncated: output exceeded 5MB cap]';
         }
         if (code === 0) {
-          resolve({ stdout, stderr, durationMs });
+          settleResolve({ stdout, stderr, durationMs });
         } else {
-          const msg = stderr || `docker exited with code ${code}`;
+          // A dropped client connection (e.g. proxy timeout) does not stop
+          // the container, so clean up explicitly before reporting failure.
+          this.stopContainer(sandboxContainerName);
+          const msg = this.explainFailure(stderr || `docker exited with code ${code}`);
           this.logger.error(`Sandbox execution failed: ${msg}`);
-          reject(new Error(`Sandbox execution failed: ${msg}`));
+          settleReject(new Error(`Sandbox execution failed: ${msg}`));
         }
       });
     });
+  }
+
+  /** Best-effort stop/remove of a sandbox container (timeouts, output cap). */
+  private stopContainer(containerName: string): void {
+    if (!NETWORK_MODE_RE.test(containerName)) return;
+    const run = (args: string[]) => {
+      try {
+        const proc = spawn('docker', args, { shell: false, stdio: 'ignore' });
+        proc.on('error', () => undefined);
+      } catch {
+        // Best-effort only — never let cleanup mask the real failure.
+      }
+    };
+    // `kill` is a POST (allowed through the socket-proxy); `--rm` then
+    // removes the container. `rm -f` is a fallback for leftover containers.
+    run(['kill', containerName]);
+    run(['rm', '-f', containerName]);
+  }
+
+  /** Throws when the filesystem holding the worktree has too little free
+   *  space for an install. Default floor is 512 MB; override with
+   *  SANDBOX_MIN_FREE_MB (0 disables the check). */
+  private async assertDiskSpace(worktreePath: string): Promise<void> {
+    const raw = this.configService.get<string>('SANDBOX_MIN_FREE_MB', '512');
+    const minMb = parseInt(raw, 10);
+    if (!Number.isFinite(minMb) || minMb <= 0) return;
+
+    try {
+      const stats = await fs.promises.statfs(worktreePath);
+      const freeMb = (stats.bavail * stats.bsize) / (1024 * 1024);
+      if (freeMb < minMb) {
+        throw new Error(
+          `Insufficient disk space for the validation sandbox: ${freeMb.toFixed(0)} MB free, ` +
+            `at least ${minMb} MB required. Free space (e.g. "docker builder prune -af" and ` +
+            'remove unused images/containers), then retry. Set SANDBOX_MIN_FREE_MB=0 to disable this check.',
+        );
+      }
+    } catch (e: any) {
+      // Re-throw our own low-space error; ignore statfs failures (older
+      // Node/filesystems) so the sandbox itself still decides.
+      if (e?.message?.startsWith('Insufficient disk space')) throw e;
+    }
+  }
+
+  /** Add an actionable hint to npm's cryptic EEXIST-from-a-full-disk output. */
+  private explainFailure(message: string): string {
+    const looksLikeDiskPressure =
+      /ENOSPC|no space left on device/i.test(message) ||
+      (/EEXIST/i.test(message) && /(_cacache|\.npm)/i.test(message));
+    if (!looksLikeDiskPressure) return message;
+    return (
+      `${message}\n\n[hint] The sandbox appears to be out of disk space or has a corrupt npm cache. ` +
+      'Free space (e.g. "docker builder prune -af", remove unused images) and retry.'
+    );
   }
 
   private validateOption(name: string, value: string, re: RegExp): void {

@@ -86,18 +86,39 @@ export class GitAgent {
     await this.syncMemoriesIntoWorktree(worktreePath, state.issuePayload?.repoPath);
 
     try {
+      const installationId = state.issuePayload?.installation?.id;
+      const owner = state.issuePayload?.repository?.owner?.login;
+      const repo = state.issuePayload?.repository?.name;
+      const defaultBranch = state.issuePayload?.repository?.default_branch || 'main';
+
+      // Fetch tokens are scrubbed from the repo-cache remote, so the push
+      // needs its own fresh installation token. It is set for this push only
+      // and scrubbed immediately after (see GitService.commitAndPush).
+      let pushAuthUrl: string | undefined;
+      if (installationId && owner && repo) {
+        pushAuthUrl = await this.githubService.getAuthenticatedRepoUrl(
+          owner,
+          repo,
+          installationId,
+        );
+      } else {
+        this.logger.warn(
+          'Missing GitHub App metadata — attempting push without a token.',
+        );
+      }
+
       this.logger.log(`Creating fix branch ${fixBranchName} in worktree and pushing...`);
       await this.gitService.createFixBranch(worktreePath, fixBranchName);
-      await this.gitService.commitAndPush(worktreePath, commitMessage, fixBranchName);
+      await this.gitService.commitAndPush(
+        worktreePath,
+        commitMessage,
+        fixBranchName,
+        pushAuthUrl,
+      );
       
       let prMessage = '';
       let prUrl: string | undefined;
       try {
-        const installationId = state.issuePayload?.installation?.id;
-        const owner = state.issuePayload?.repository?.owner?.login;
-        const repo = state.issuePayload?.repository?.name;
-        const defaultBranch = state.issuePayload?.repository?.default_branch || 'main';
-
         if (installationId && owner && repo) {
           this.logger.log(`Creating Pull Request to merge ${fixBranchName} into ${defaultBranch}...`);
 
@@ -167,9 +188,16 @@ export class GitAgent {
         messages: [new SystemMessage(`Successfully pushed branch ${fixBranchName}.${prMessage}`)]
       };
     } catch (e: any) {
-      this.logger.error(`Git push failed: ${e.message}`);
+      const reason = `Git push failed: ${e.message}`;
+      this.logger.error(reason);
+      // The graph's `git -> END` edge is unconditional, so without marking
+      // the run invalid here the pipeline would finish "successfully" even
+      // though no branch/PR exists.
       return {
-        messages: [new SystemMessage(`Git push failed: ${e.message}`)]
+        isValid: false,
+        abortReason: reason,
+        validationFeedback: reason,
+        messages: [new SystemMessage(reason)],
       };
     }
   }

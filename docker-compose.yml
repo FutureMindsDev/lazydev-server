@@ -3,7 +3,10 @@ services:
   # proxy over TCP instead — so a bad `npm install` script inside the sandbox
   # can't take over the host through the raw socket.
   socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.socket-proxy
+    image: lazydev-socket-proxy:v0.5.0-60m
     container_name: lazydev-socket-proxy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -58,10 +61,13 @@ services:
       - LAZYDEV_CONTAINER_NAME=lazydev-app
       - WORKTREE_BASE_PATH=/app/worktrees
       # Sandbox talks to Docker through the socket-proxy, never the raw
-      # socket. Runs as the unprivileged 'node' user with a 10-min kill.
+      # socket. Runs as the unprivileged 'node' user with a 20-min kill.
       - DOCKER_HOST=tcp://socket-proxy:2375
       - SANDBOX_USER=node
-      - SANDBOX_TIMEOUT_MS=600000
+      - SANDBOX_TIMEOUT_MS=1200000
+      # Modern Next/Turbopack builds need more than the old 512m/1 CPU.
+      - SANDBOX_MEMORY_LIMIT=2g
+      - SANDBOX_CPU_LIMIT=2
       # MCP Server (Hermes / OpenClaw):
       #  Served on port 3200 at /mcp (shared with the public API).
       #  Set MCP_AUTH_TOKEN in .env so clients must send
@@ -143,7 +149,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15.19-alpine
     container_name: lazydev-postgres
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
@@ -162,7 +168,7 @@ services:
       - lazydev-network
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.11-alpine
     container_name: lazydev-redis
     # Empty REDIS_PASSWORD = plain dev server. Set a password in .env and
     # every app client (BullMQ, locks, feedback, SSE events, requeue
@@ -182,7 +188,7 @@ services:
       - lazydev-network
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.20.0
     container_name: lazydev-qdrant
     ports:
       - '127.0.0.1:6333:6333'
@@ -197,7 +203,7 @@ services:
   # Redis while developing. Not required for the app to run.
   # ───────────────────────────────────────────────────────────────────────────
   # pgadmin:
-  #   image: dpage/pgadmin4
+  #   image: dpage/pgadmin4:9.18.0
   #   container_name: lazydev-pgadmin
   #   environment:
   #     PGADMIN_DEFAULT_EMAIL: admin@lazydev.com
@@ -210,7 +216,7 @@ services:
   #     - lazydev-network
   #
   # redisinsight:
-  #   image: redis/redisinsight:latest
+  #   image: redis/redisinsight:3.8.0
   #   container_name: lazydev-redisinsight
   #   ports:
   #     - '8001:5540'
@@ -237,7 +243,7 @@ services:
   # Grafana credentials: admin / admin (change via GF_SECURITY_ADMIN_PASSWORD).
   # ───────────────────────────────────────────────────────────────────────────
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.15.1
     container_name: lazydev-prometheus
     ports:
       - '127.0.0.1:9090:9090'
@@ -249,7 +255,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.2.4
     container_name: lazydev-grafana
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
@@ -300,7 +306,7 @@ services:
   # The public URL is printed in `docker compose logs ngrok`.
   #
   ngrok:
-    image: ngrok/ngrok:latest
+    image: ngrok/ngrok:3.39.13-debian
     container_name: lazydev-ngrok
     profiles: [ 'tunnel' ]
     # The ngrok image's default entrypoint is `ngrok` and its shell lives at
@@ -329,7 +335,7 @@ services:
   # third-party endpoint — traffic flows through your tailnet.
   #
   # tailscale:
-  #   image: tailscale/tailscale:latest
+  #   image: tailscale/tailscale:v1.104.2
   #   container_name: lazydev-tailscale
   #   hostname: lazydev
   #   environment:

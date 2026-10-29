@@ -123,8 +123,20 @@ export class GitService {
     worktreePath: string,
     commitMessage: string,
     fixBranchName: string,
+    authUrl?: string,
   ): Promise<void> {
     const git: SimpleGit = simpleGit(worktreePath);
+
+    // The repo-cache remote is deliberately scrubbed to a credential-free
+    // HTTPS URL after fetch, so a worktree push has no credentials. When the
+    // caller supplies a fresh installation-token URL, use it for exactly this
+    // push and scrub it afterwards (the worktree shares the parent repo config).
+    const authUrlPattern =
+      /^https:\/\/x-access-token:[^@]+@github\.com\/[^/]+\/[^/]+\.git$/;
+    if (authUrl && !authUrlPattern.test(authUrl)) {
+      throw new Error('Invalid authenticated Git remote URL.');
+    }
+    const plainUrl = authUrl?.replace(/^https:\/\/[^@]+@/, 'https://');
 
     const userName = process.env.GIT_USER_NAME;
     const userEmail = process.env.GIT_USER_EMAIL;
@@ -141,7 +153,11 @@ export class GitService {
     const pushStrategy = process.env.GIT_PUSH_STRATEGY || 'force';
     
     this.logger.log(`Staging all changes in ${worktreePath}`);
-    await git.add('.');
+    // Serena writes its local project metadata here. It is machine-local
+    // (project.yml contains absolute paths), may be owned by the root-running
+    // Serena container (mode 600), and must never be committed. Excluding it
+    // from the pathspec also stops git from trying to read an unreadable file.
+    await git.raw(['add', '--all', '--', '.', ':(exclude).serena']);
     
     // Explicitly prevent massive accidental lockfile commits by unstaging them
     const ignoredPaths = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'];
@@ -169,20 +185,39 @@ export class GitService {
       );
     }
 
-    await git.commit(commitMessage);
+    // Bypass repo-local hooks (husky/pre-commit, commitlint, etc.). This is
+    // an automated bot commit: hooks assume the developer's toolchain (e.g.
+    // pnpm) is installed and can fail the push for reasons unrelated to the
+    // patch. CI and human review still run the repo's checks.
+    await git.raw(['commit', '--no-verify', '-m', commitMessage]);
     
     // Log the resulting commit to confirm it was created
     const lastCommit = await git.log(['-1', '--oneline']);
     this.logger.log(`Commit created: ${lastCommit.latest?.hash} ${lastCommit.latest?.message}`);
     
-    if (pushStrategy === 'force') {
-      this.logger.warn(`[GIT PUSH STRATEGY: force] Force pushing branch "${fixBranchName}" to overwrite any existing history.`);
-      await git.push('origin', fixBranchName, ['--set-upstream', '--force']);
-    } else {
-      this.logger.log(`[GIT PUSH STRATEGY: ${pushStrategy}] Pushing fix branch "${fixBranchName}" to origin`);
-      await git.push('origin', fixBranchName, ['--set-upstream']);
+    try {
+      if (authUrl) {
+        await git.remote(['set-url', 'origin', authUrl]);
+      }
+      if (pushStrategy === 'force') {
+        this.logger.warn(`[GIT PUSH STRATEGY: force] Force pushing branch "${fixBranchName}" to overwrite any existing history.`);
+        await git.push('origin', fixBranchName, ['--set-upstream', '--force']);
+      } else {
+        this.logger.log(`[GIT PUSH STRATEGY: ${pushStrategy}] Pushing fix branch "${fixBranchName}" to origin`);
+        await git.push('origin', fixBranchName, ['--set-upstream']);
+      }
+      this.logger.log(`Fix branch "${fixBranchName}" pushed to origin`);
+    } finally {
+      if (plainUrl) {
+        try {
+          await git.remote(['set-url', 'origin', plainUrl]);
+        } catch (e: any) {
+          this.logger.warn(
+            `Could not scrub install token from remote URL: ${e.message}`,
+          );
+        }
+      }
     }
-    this.logger.log(`Fix branch "${fixBranchName}" pushed to origin`);
   }
 
   /**

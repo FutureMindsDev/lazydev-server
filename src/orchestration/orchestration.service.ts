@@ -32,6 +32,7 @@ import {
   checkBatchDispatch,
   DispatchCheckerConfig,
 } from '../common/tool-call-tracker';
+import { cloneAIMessageWithToolCalls } from '../common/message-utils';
 
 /**
  * Hard caps for the tool-loop conditional edges — pure backstops.
@@ -154,12 +155,10 @@ export class OrchestrationService implements OnModuleInit {
         plannerMessages.length - 1
       ] as AIMessage;
       const lastToolCalls = lastAIMessage.tool_calls || [];
-      const filteredAIMessage = new AIMessage({
-        content: lastAIMessage.content,
-        tool_calls: lastToolCalls.filter((tc: any) =>
-          allowedCallIds.has(tc.id),
-        ),
-      });
+      const filteredAIMessage = cloneAIMessageWithToolCalls(
+        lastAIMessage,
+        lastToolCalls.filter((tc: any) => allowedCallIds.has(tc.id)),
+      );
       const filteredMessages = [
         ...plannerMessages.slice(0, -1),
         filteredAIMessage,
@@ -236,12 +235,10 @@ export class OrchestrationService implements OnModuleInit {
         patchMessages.length - 1
       ] as AIMessage;
       const lastToolCalls = lastAIMessage.tool_calls || [];
-      const filteredAIMessage = new AIMessage({
-        content: lastAIMessage.content,
-        tool_calls: lastToolCalls.filter((tc: any) =>
-          allowedCallIds.has(tc.id),
-        ),
-      });
+      const filteredAIMessage = cloneAIMessageWithToolCalls(
+        lastAIMessage,
+        lastToolCalls.filter((tc: any) => allowedCallIds.has(tc.id)),
+      );
       const filteredMessages = [
         ...patchMessages.slice(0, -1),
         filteredAIMessage,
@@ -455,18 +452,25 @@ export class OrchestrationService implements OnModuleInit {
     state: AgentState,
   ): Promise<Partial<AgentState>> {
     const taskId = state.issuePayload?.taskId;
-    if (!taskId) return {};
-
     let feedback: string | null = null;
-    try {
-      feedback = await this.humanFeedbackService.consume(taskId);
-    } catch (e: any) {
-      // Never block the retry loop on a feedback-store hiccup.
-      this.logger.warn(`Could not read human feedback: ${e.message}`);
-      return {};
+    if (taskId) {
+      try {
+        feedback = await this.humanFeedbackService.consume(taskId);
+      } catch (e: any) {
+        // Never block the retry loop on a feedback-store hiccup.
+        this.logger.warn(`Could not read human feedback: ${e.message}`);
+      }
     }
 
-    if (!feedback) return {};
+    // ALWAYS reset the patcher's tool-loop conversation on a retry, even
+    // when no human feedback was submitted. The previous attempt ends with
+    // the model's "done" summary; keeping that history makes it parrot the
+    // summary again instead of acting on the new validation feedback, while
+    // the stale gate session still reports the old edits as applied. That is
+    // how a failed patch kept being re-submitted as "complete".
+    const resetPatchMessages = { patchMessages: [] };
+
+    if (!feedback) return resetPatchMessages;
 
     this.logger.log(`Applying human feedback to task ${taskId}`);
     const existing = state.validationFeedback
@@ -475,11 +479,7 @@ export class OrchestrationService implements OnModuleInit {
 
     return {
       validationFeedback: `${existing}### Human feedback (must be addressed)\n${feedback}`,
-      // Reset the patcher's tool-loop conversation so the retry starts a
-      // fresh attempt: the previous attempt's stale tool-call history
-      // (including any half-applied edits or rejected gate messages) would
-      // otherwise bleed into the new attempt and confuse the LLM.
-      patchMessages: [],
+      ...resetPatchMessages,
     };
   }
 
@@ -502,9 +502,12 @@ export class OrchestrationService implements OnModuleInit {
       issuePayload,
     };
 
-    // recursionLimit is raised from the default (25) to 100 to accommodate
-    // the research ⇄ tools loop, which can legitimately iterate several times
-    // as the LLM pivots between search terms before producing its summary.
+    // recursionLimit must cover BOTH the planner tool loop (up to 60
+    // messages) and the patcher tool loop (up to 80 messages), plus gates and
+    // validation. Each message step costs ~2 graph supersteps, so 100 fired
+    // before the patcher's own 80-message cap could stop it — turning a
+    // tool-loop overrun into an opaque GraphRecursionError. 250 leaves room
+    // for the capped loops without removing the backstop.
     //
     // Wrapped in try/catch so that a thrown exception (GraphRecursionError,
     // patch-generation failure, or any unhandled error from an agent node)
@@ -514,7 +517,7 @@ export class OrchestrationService implements OnModuleInit {
     let finalState: AgentState;
     try {
       finalState = await this.graph.invoke(initialState, {
-        recursionLimit: 100,
+        recursionLimit: 250,
       });
     } catch (err: any) {
       this.logger.error(
@@ -552,7 +555,15 @@ export class OrchestrationService implements OnModuleInit {
       // Re-throw so BullMQ can retry or move to the dead-letter queue.
       throw err;
     }
-    this.logger.log('Pipeline finished.');
+    if (finalState.isValid === true) {
+      this.logger.log('Pipeline finished — validation passed.');
+    } else {
+      const reason =
+        finalState.abortReason ||
+        finalState.validationFeedback ||
+        `patch gate decision=${finalState.patchGateDecision ?? 'unknown'}`;
+      this.logger.warn(`Pipeline finished without a completed fix: ${reason}`);
+    }
 
     // Clean up the patcher's per-worktree gate-tracking session so the
     // read-history gates don't leak across pipeline runs on the same

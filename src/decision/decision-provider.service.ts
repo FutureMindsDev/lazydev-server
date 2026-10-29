@@ -130,6 +130,11 @@ export class DecisionProviderService implements OnModuleDestroy {
             this.configService.get<string>('JUDGE_MODEL') ||
             this.configService.get<string>('LLM_MODEL') ||
             undefined,
+          // Reasoning models on remote gateways routinely need >30s; a
+          // timeout here silently degrades every gate to its heuristic.
+          timeoutMs:
+            Number(this.configService.get<string>('JUDGE_TIMEOUT_MS', '60000')) ||
+            60000,
         });
       default:
         // clef-local / laya-local / openjev-local: no sidecar yet.
@@ -145,33 +150,67 @@ export class DecisionProviderService implements OnModuleDestroy {
    * set DECISION_FALLBACK). If everything fails, throw so the caller can
    * apply its own free last resort (regex-only / old heuristic).
    * Default = free: no surprise LLM bills, ever.
+   *
+   * Clef is skipped entirely when disabled (PROMPT_GUARD_CLEF_ENABLED=false
+   * or the dashboard toggle is off) — the switch must gate every Clef call,
+   * not just the prompt guard, or "disabled" is a lie.
    */
   async decide(
     gate: DecisionGate,
     state: string,
     questions: DecisionQuestion[],
   ): Promise<DecisionResult> {
+    const clefEnabled = await this.isClefEnabled();
     const primary = this.resolveProviderId(gate);
-    const candidates: DecisionProviderId[] = [primary];
-    if (primary !== 'clef-workers') candidates.push('clef-workers');
-    const explicit = this.resolveFallbackId();
-    if (explicit !== 'clef-workers' && !candidates.includes(explicit)) {
-      // Paid-capable fallback runs ONLY on explicit opt-in. resolveFallbackId
-      // returns clef-workers unless DECISION_FALLBACK names something else,
-      // so reaching here means the operator chose it.
-      candidates.push(explicit);
+    const candidates: DecisionProviderId[] = [];
+    const addCandidate = (id: DecisionProviderId) => {
+      if (id === 'clef-workers' && !clefEnabled) return;
+      if (!candidates.includes(id)) candidates.push(id);
+    };
+    addCandidate(primary);
+    // The free Clef tier is the implicit fallback. Skip it when the operator
+    // turned Clef off (the explicit fallback below still runs).
+    addCandidate('clef-workers');
+    // Paid-capable fallback runs ONLY on explicit opt-in. resolveFallbackId
+    // returns clef-workers unless DECISION_FALLBACK names something else,
+    // so a non-Clef value here means the operator chose it.
+    addCandidate(this.resolveFallbackId());
+
+    if (candidates.length === 0) {
+      throw new Error(
+        'Clef is disabled and no alternative decision provider is configured. ' +
+          'Set DECISION_PROVIDER / DECISION_FALLBACK to a non-Clef provider.',
+      );
     }
+    if (!clefEnabled) {
+      this.logger.debug('Clef is disabled — skipping clef-workers provider.');
+    }
+
     let lastError: unknown = new Error('No decision provider available.');
     for (const id of candidates) {
-      try {
-        const result = await this.buildProvider(id).decide(state, questions);
-        this.logger.debug(`Decision (${gate}) served by ${result.providerId}.`);
-        return result;
-      } catch (e: any) {
-        this.logger.warn(
-          `Decision provider ${id} failed (${gate}): ${e.message}.`,
-        );
-        lastError = e;
+      // One quick retry for provider-side overload/throttling (429/5xx).
+      // Gateways return these transiently; immediately degrading the gate to
+      // a heuristic makes the pipeline look broken when nothing is wrong.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const result = await this.buildProvider(id).decide(state, questions);
+          this.logger.debug(`Decision (${gate}) served by ${result.providerId}.`);
+          return result;
+        } catch (e: any) {
+          lastError = e;
+          const transient = /HTTP (429|500|502|503|504)/i.test(e.message || '');
+          if (transient && attempt < 1) {
+            this.logger.warn(
+              `Decision provider ${id} temporarily unavailable (${gate}): ${e.message}. Retrying once.`,
+            );
+            await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
+          this.logger.warn(
+            `Decision provider ${id} failed (${gate}): ${e.message}.`,
+          );
+          break;
+        }
       }
     }
     throw lastError;

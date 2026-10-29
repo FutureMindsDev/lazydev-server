@@ -278,6 +278,31 @@ describe('PatchGeneratorAgent', () => {
         'function handleRequest() { return 1; }',
       );
     });
+
+    it('rejects a whole-file replacement body (file-level directive/imports)', async () => {
+      const tools = agent.getToolsForSession(worktreePath);
+      const readFile = tools.find((t) => t.name === 'read_file')!;
+      const replaceTool = tools.find((t) => t.name === 'replace_symbol_body')!;
+
+      await readFile.invoke({ filePath: 'src/app.tsx' });
+
+      const withDirective = await replaceTool.invoke({
+        filePath: 'src/app.tsx',
+        symbolName: 'ContactSection',
+        newBody: '"use client";\n\nexport function ContactSection() { return null; }',
+      });
+      expect(withDirective).toContain('ONLY the new symbol definition');
+      expect(serenaMcp.replaceSymbolBody).not.toHaveBeenCalled();
+
+      const withImport = await replaceTool.invoke({
+        filePath: 'src/app.tsx',
+        symbolName: 'ContactSection',
+        newBody:
+          'import React from "react";\n\nexport function ContactSection() { return null; }',
+      });
+      expect(withImport).toContain('ONLY the new symbol definition');
+      expect(serenaMcp.replaceSymbolBody).not.toHaveBeenCalled();
+    });
   });
 
   // ─── Symbol-not-found self-correction ────────────────────────────────

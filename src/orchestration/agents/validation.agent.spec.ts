@@ -402,5 +402,34 @@ describe('ValidationAgent — historical_issues_and_lessons persistence', () => 
       expect(result.abortReason).toBeUndefined();
       expect(result.validationMaxAttempts).toBe(3);
     });
+
+    it('aborts without asking the model on a sandbox timeout', async () => {
+      const decide = jest.fn();
+      const module: TestingModule = await Test.createTestingModule({
+        providers: [
+          ValidationAgent,
+          {
+            provide: ValidationService,
+            useValue: failingService(
+              'Sandbox execution timed out after 1200000ms and was killed.',
+            ),
+          },
+          { provide: SerenaMcpService, useValue: serenaMcp },
+          { provide: LlmService, useValue: { getModel: () => llmModel } },
+          { provide: DecisionProviderService, useValue: { decide } },
+          {
+            provide: HumanFeedbackService,
+            useValue: { storeGateStatus: jest.fn().mockResolvedValue(undefined) },
+          },
+        ],
+      }).compile();
+      const gated = module.get(ValidationAgent);
+
+      const result = await gated.invoke(stateWith());
+
+      expect(result.isValid).toBe(false);
+      expect(result.abortReason).toContain('environment failure');
+      expect(decide).not.toHaveBeenCalled();
+    });
   });
 });

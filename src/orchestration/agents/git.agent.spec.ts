@@ -102,6 +102,11 @@ describe('GitAgent naming', () => {
             getInstallationOctokit: jest
               .fn()
               .mockResolvedValue({ rest: { pulls: { create: pullsCreate } } }),
+            getAuthenticatedRepoUrl: jest
+              .fn()
+              .mockResolvedValue(
+                'https://x-access-token:tok@github.com/acme/widgets.git',
+              ),
           },
         },
         { provide: SerenaMcpService, useValue: serenaMcp },
@@ -329,6 +334,34 @@ describe('GitAgent naming', () => {
 
       expect(gitService.commitAndPush).toHaveBeenCalled();
       expect(pullsCreate).toHaveBeenCalled();
+    });
+  });
+
+  describe('push authentication', () => {
+    it('uses a fresh installation token URL for the push', async () => {
+      await agent.invoke(stateFor());
+
+      expect(gitService.commitAndPush).toHaveBeenCalledWith(
+        '/tmp/wt',
+        expect.stringContaining('resolve issue #501'),
+        'lazydev/branch',
+        'https://x-access-token:tok@github.com/acme/widgets.git',
+      );
+    });
+  });
+
+  describe('push failure', () => {
+    it('marks the run failed instead of reporting a successful pipeline', async () => {
+      gitService.commitAndPush.mockRejectedValueOnce(
+        new Error('.husky/pre-commit: line 1: pnpm: not found'),
+      );
+
+      const out = await agent.invoke(stateFor());
+
+      expect(out.isValid).toBe(false);
+      expect(out.abortReason).toContain('Git push failed');
+      expect(out.validationFeedback).toContain('pnpm: not found');
+      expect(pullsCreate).not.toHaveBeenCalled();
     });
   });
 });

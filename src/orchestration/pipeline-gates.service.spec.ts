@@ -160,6 +160,36 @@ describe('PipelineGatesService', () => {
       expect(out).toMatchObject({ patchRisk: 'low', patchGateDecision: 'validate' });
     });
 
+    it('does not send a small clean patch to the model just because an optional edit failed', async () => {
+      const out = await gates.patchGateNode(
+        patchState(
+          'Applied changes:\nEDIT components/hero.tsx | Hero',
+          'DELETE public/images/my-photo.jpg: not read before edit',
+        ),
+      );
+      expect(decision.decide).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ patchRisk: 'medium', patchGateDecision: 'validate' });
+    });
+
+    it('downgrades a pure unapplied retry to validate instead of looping', async () => {
+      decision.decide.mockResolvedValue({
+        providerId: 'test',
+        answers: {
+          decision: { option: 'retry_patch', probability: 0.9 },
+          risk: { option: 'high', probability: 0.9 },
+        },
+      });
+      // >2 files forces the model path even with no safety flags.
+      const out = await gates.patchGateNode(
+        patchState(
+          'Applied changes:\nEDIT a.ts | A\nEDIT b.ts | B\nEDIT c.ts | C',
+          'DELETE public/images/my-photo.jpg: not read before edit',
+        ),
+      );
+      expect(decision.decide).toHaveBeenCalled();
+      expect(out.patchGateDecision).toBe('validate');
+    });
+
     it('sends dependency changes to the model and honors abort', async () => {
       decision.decide.mockResolvedValue({
         providerId: 'test',
