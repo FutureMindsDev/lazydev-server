@@ -289,9 +289,11 @@ script inside the sandbox could take over the machine. The proxy shrinks
 that risk to just "run containers".
 
 The sandbox container itself runs as the unprivileged `node` user
-(`SANDBOX_USER=node`, never `root`) with a 10-minute kill
-(`SANDBOX_TIMEOUT_MS=600000`), dropped Linux capabilities, and strict checks
-on every docker flag before it runs.
+(`SANDBOX_USER=node`, never `root`) with a 20-minute kill
+(`SANDBOX_TIMEOUT_MS=1200000`), dropped Linux capabilities, and strict checks
+on every docker flag before it runs. Default resources are 2 GB / 2 CPUs
+(`SANDBOX_MEMORY_LIMIT`, `SANDBOX_CPU_LIMIT`) — modern Next/Turbopack builds
+need more than the old 512 MB / 1 CPU.
 
 ### Cross-platform sandbox (Mac, Linux, Windows)
 
@@ -600,7 +602,7 @@ Open `http://localhost:3000` to view real-time pipeline runs, queue states, repo
 - **Multi-Agent Orchestration**: LangGraph AI pipeline — Onboarding → Planner → PatchGenerator → ValidationAgent → GitAgent.
 - **Dynamic Provider Configuration**: Configure LLM providers via backend `.env` or client dashboard UI with AES-256-GCM encryption.
 - **Per-Agent Model Selection**: Assign custom providers and models to individual agents.
-- **Sandbox Validation**: Fixes verified with `npm run build` inside isolated Docker containers (spawned via argv with no shell, strict flag checks, unprivileged `node` user, dropped capabilities, 10-minute kill). The app reaches Docker only through a socket-proxy sidecar — never the raw host socket.
+- **Sandbox Validation**: Fixes verified with `npm run build` inside isolated Docker containers (spawned via argv with no shell, strict flag checks, unprivileged `node` user, dropped capabilities, 20-minute kill). The app reaches Docker only through a socket-proxy sidecar — never the raw host socket.
 - **Rate Limiting**: Throttler guard enforced on every route (100 requests/minute) against DoS / LLM-burn.
 - **Cross-Platform Sandbox**: Named Docker volume for worktrees ensures cross-platform reliability.
 - **Self-Healing Loop**: Automatically retries patch generation incorporating validation feedback.

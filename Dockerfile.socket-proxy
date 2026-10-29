@@ -1,0 +1,13 @@
+# The app streams `docker run` through this proxy and waits for the sandbox
+# to finish. The stock proxy closes idle client/server streams after 10
+# minutes; a silent Next/Turbopack build easily goes quiet for longer than
+# that, which surfaces as:
+#   docker: error waiting for container: unexpected EOF
+# Raise both timeouts above SANDBOX_TIMEOUT_MS (20 min) so the sandbox's own
+# timeout is what actually terminates a long build.
+FROM tecnativa/docker-socket-proxy:v0.5.0
+
+RUN sed -i \
+      -e 's/timeout client 10m/timeout client 60m/' \
+      -e 's/timeout server 10m/timeout server 60m/' \
+      /usr/local/etc/haproxy/haproxy.cfg.template

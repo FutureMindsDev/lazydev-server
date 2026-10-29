@@ -37,20 +37,25 @@ export class ValidationService {
     this.logger.debug(`Detected language: ${language}`);
 
     let command = '';
-    let image = 'node:20-alpine';
+    let image = 'node:22-alpine';
 
     switch (language) {
       case ProjectLanguage.NODEJS:
-        // Install deps, then try `npm test`. If the repo has no test script
-        // (exit 1 with "Missing script: test"), fall back to `npm run build`
-        // as a compile-check. If neither exists, the install itself passing
-        // is sufficient signal that the patch didn't break dependencies.
+        // Install deps, then run the test script if it exists, else the build
+        // script. Script PRESENCE is checked explicitly instead of chaining
+        // `npm test || npm run build || echo pass`: the old chain swallowed a
+        // real build failure (its `|| echo` made the command exit 0), so a
+        // broken patch could be reported as validated. If neither script
+        // exists, install-only success is the best signal available.
         command =
-          'npm install --legacy-peer-deps && ' +
-          "(npm test 2>&1 || npm run build 2>&1 || echo 'No test or build script — install-only validation passed')";
+          'npm install --legacy-peer-deps --no-audit --no-fund && ' +
+          'if node -e "process.exit(require(\'./package.json\').scripts?.test ? 0 : 1)"; then npm test; ' +
+          'elif node -e "process.exit(require(\'./package.json\').scripts?.build ? 0 : 1)"; then npm run build; ' +
+          "else echo 'No test or build script — install-only validation passed'; fi";
         // Use full Debian image — alpine lacks Python/make/g++ needed by
-        // native modules (kerberos, bcrypt, canvas, etc.)
-        image = 'node:20';
+        // native modules (kerberos, bcrypt, canvas, etc.). Node 22 is the
+        // current LTS; modern packages (Next 16, AI SDK) require >=22.
+        image = 'node:22';
         break;
       case ProjectLanguage.PYTHON:
         command = 'pip install -r requirements.txt && pytest';

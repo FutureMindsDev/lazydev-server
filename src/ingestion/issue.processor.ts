@@ -169,7 +169,7 @@ export class IssueProcessor extends WorkerHost {
 
       // Step 7: Run the full multi-agent LangGraph pipeline
       // Shape the payload to match the GitHub webhook structure that agents expect
-      await this.orchestrationService.runPipeline({
+      const finalState = await this.orchestrationService.runPipeline({
         issue: {
           number: issueNumber,
           title: job.data.title,
@@ -199,14 +199,43 @@ export class IssueProcessor extends WorkerHost {
         kind: job.data.kind ?? 'fix',
       });
 
-      this.logger.log(`[Job ${jobId}] ✅ Pipeline completed successfully`);
+      // A graph run can reach END without producing a fix: triage/patch gates
+      // quarantine or abort, or validation exhausts its retries. Only report
+      // success when validation actually passed (GitAgent only pushes then).
+      if (finalState?.isValid === true) {
+        this.logger.log(
+          `[Job ${jobId}] ✅ Pipeline completed successfully${finalState.prUrl ? ` — ${finalState.prUrl}` : ''}`,
+        );
+      } else {
+        const reason =
+          finalState?.abortReason ||
+          finalState?.patchGateDecision ||
+          finalState?.validationFeedback ||
+          'pipeline ended before validation passed';
+        this.logger.warn(
+          `[Job ${jobId}] ⚠️ Pipeline stopped without a completed fix: ${reason}`,
+        );
+      }
 
-      // Step 8: Cleanup worktree after job completes
-      await this.worktreeManager.cleanupJobWorktree(
-        jobId,
-        repoPath && worktreePath ? { repoPath, worktreePath } : undefined,
-      );
-      this.logger.log(`[Job ${jobId}] Worktree cleaned up`);
+      // Step 8: Cleanup worktree after job completes. Cleanup is best-effort:
+      // the pipeline already succeeded (and may have opened a PR), so a
+      // filesystem/permission hiccup here must not turn the job into a
+      // failure. Startup reconciliation will retry leftovers.
+      try {
+        await this.worktreeManager.cleanupJobWorktree(
+          jobId,
+          repoPath && worktreePath ? { repoPath, worktreePath } : undefined,
+        );
+        this.logger.log(`[Job ${jobId}] Worktree cleaned up`);
+      } catch (cleanupError: unknown) {
+        const cErr =
+          cleanupError instanceof Error
+            ? cleanupError
+            : new Error(String(cleanupError));
+        this.logger.warn(
+          `[Job ${jobId}] Worktree cleanup failed after successful run: ${cErr.message}`,
+        );
+      }
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       this.logger.error(

@@ -13,6 +13,10 @@
  */
 
 import { Test, TestingModule } from '@nestjs/testing';
+import { AIMessage } from '@langchain/core/messages';
+import { DynamicStructuredTool } from '@langchain/core/tools';
+import { ToolNode } from '@langchain/langgraph/prebuilt';
+import { z } from 'zod';
 import { OrchestrationService } from './orchestration.service';
 import { AuditLogService } from './audit-log.service';
 import { HumanFeedbackService } from '../feedback/human-feedback.service';
@@ -132,6 +136,15 @@ describe('OrchestrationService — human feedback integration', () => {
 
     const [retryState] = nthCall<[AgentState]>(patcher.invoke, 1);
     expect(retryState.validationFeedback).toBe('tests failed');
+  });
+
+  it('resets the patcher conversation on retry even without human feedback', async () => {
+    await run({ taskId: 'mcp-1', issue: { number: 1, title: 't', body: 'b' } });
+
+    const [retryState] = nthCall<[AgentState]>(patcher.invoke, 1);
+    // A stale "done" conversation makes the model repeat its old summary
+    // instead of fixing the validation failure.
+    expect(retryState.patchMessages).toEqual([]);
   });
 
   it('skips the feedback lookup when the run has no taskId', async () => {
@@ -302,5 +315,139 @@ describe('OrchestrationService — audit log on pipeline exception', () => {
     expect(loggedState.validationFeedback).toContain(
       'Patch generation failed',
     );
+  });
+});
+
+/**
+ * The planner_tools / patcher_tools nodes replace the last AIMessage with a
+ * filtered copy before handing it to ToolNode. That reconstruction must not
+ * drop provider metadata: DeepSeek needs reasoning_content on assistant turns,
+ * and Gemini needs tool_calls[].extra_content.thought_signature.
+ */
+describe('OrchestrationService — filtered tool-call messages preserve metadata', () => {
+  let service: OrchestrationService;
+
+  const noopTool = (name: string) =>
+    new DynamicStructuredTool({
+      name,
+      description: 'noop',
+      schema: z.object({}),
+      func: () => 'ok',
+    });
+
+  beforeEach(async () => {
+    const planner = {
+      getTools: jest.fn().mockReturnValue([noopTool('planner_noop')]),
+      invoke: jest.fn().mockImplementation((state: AgentState) => {
+        if (!state.plannerMessages?.length) {
+          return Promise.resolve({
+            plannerMessages: [
+              new AIMessage({
+                content: '',
+                tool_calls: [
+                  { name: 'planner_noop', args: {}, id: 'planner_call_1' },
+                ],
+                additional_kwargs: { reasoning_content: '' },
+              }),
+            ],
+          });
+        }
+        return Promise.resolve({
+          implementationPlan: 'plan',
+          patchMessages: [],
+          plannerMessages: [new AIMessage({ content: 'plan' })],
+        });
+      }),
+    };
+
+    const patcher = {
+      getToolsForSession: jest.fn().mockReturnValue([noopTool('patcher_noop')]),
+      invoke: jest.fn().mockImplementation((state: AgentState) => {
+        if (!state.patchMessages?.length) {
+          return Promise.resolve({
+            patchMessages: [
+              new AIMessage({
+                content: '',
+                tool_calls: [
+                  { name: 'patcher_noop', args: {}, id: 'patcher_call_1' },
+                ],
+                additional_kwargs: { reasoning_content: '' },
+              }),
+            ],
+          });
+        }
+        return Promise.resolve({
+          generatedPatch: 'diff',
+          patchMessages: [new AIMessage({ content: 'done' })],
+          messages: [],
+        });
+      }),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        OrchestrationService,
+        {
+          provide: OnboardingAgent,
+          useValue: { invoke: jest.fn().mockResolvedValue({}) },
+        },
+        { provide: PlannerAgent, useValue: planner },
+        { provide: PatchGeneratorAgent, useValue: patcher },
+        {
+          provide: ValidationAgent,
+          useValue: {
+            invoke: jest
+              .fn()
+              .mockResolvedValue({ isValid: true, validationAttempts: 1 }),
+          },
+        },
+        {
+          provide: GitAgent,
+          useValue: { invoke: jest.fn().mockResolvedValue({}) },
+        },
+        {
+          provide: AuditLogService,
+          useValue: {
+            logPipelineOutcome: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: HumanFeedbackService, useValue: { consume: jest.fn() } },
+        { provide: PipelineGatesService, useValue: passThroughGates() },
+      ],
+    }).compile();
+
+    service = module.get(OrchestrationService);
+    service.onModuleInit();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('keeps reasoning_content on the filtered message passed to ToolNode', async () => {
+    const toolNodeInvoke = jest.spyOn(ToolNode.prototype, 'invoke');
+
+    await service.runPipeline({
+      issue: { number: 1, title: 't', body: 'b' },
+    });
+
+    const invocations: unknown[][] = toolNodeInvoke.mock.calls.map(
+      (call) => call[0] as unknown[],
+    );
+    expect(invocations).toHaveLength(2);
+
+    const plannerFiltered = invocations[0].find(
+      (message): message is AIMessage => message instanceof AIMessage,
+    );
+    expect(plannerFiltered).toBeInstanceOf(AIMessage);
+    expect(plannerFiltered?.tool_calls[0].id).toBe('planner_call_1');
+    expect(plannerFiltered?.additional_kwargs.reasoning_content).toBe('');
+
+    const patcherFiltered = invocations[1].find(
+      (message): message is AIMessage => message instanceof AIMessage,
+    );
+    expect(patcherFiltered).toBeInstanceOf(AIMessage);
+    expect(patcherFiltered?.tool_calls[0].id).toBe('patcher_call_1');
+    expect(patcherFiltered?.additional_kwargs.reasoning_content).toBe('');
   });
 });

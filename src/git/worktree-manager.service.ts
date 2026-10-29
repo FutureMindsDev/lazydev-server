@@ -13,6 +13,7 @@
  */
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { GitService } from './git.service';
@@ -45,6 +46,9 @@ export class WorktreeManagerService implements OnModuleInit {
    * whatever it missed on the last run.
    */
   private readonly activeWorktrees = new Map<string, WorktreeHandle>();
+
+  /** Set after the first failed setfacl call so startup/job logs aren't spammed. */
+  private aclWarningLogged = false;
 
   constructor(private readonly gitService: GitService) {}
 
@@ -80,6 +84,7 @@ export class WorktreeManagerService implements OnModuleInit {
     if (!fs.existsSync(parentDir)) {
       fs.mkdirSync(parentDir, { recursive: true });
     }
+    this.ensureWorktreeBaseAcl(parentDir);
 
     await this.gitService.createWorktree(repoPath, worktreePath, branchName);
 
@@ -126,6 +131,37 @@ export class WorktreeManagerService implements OnModuleInit {
 
     this.activeWorktrees.delete(jobId);
     this.logger.log(`Worktree cleanup complete for job ${jobId}`);
+  }
+
+  /**
+   * Gives the unprivileged app user access to everything created under the
+   * worktree base, including files created by the root-running Serena
+   * container. Without this, Serena's `.serena/` metadata (project.yml is
+   * mode 600, root-owned) makes `git add` fail and leaves worktrees that the
+   * app cannot delete (EACCES on cleanup).
+   *
+   * A default ACL is applied to the base directory so every newly created
+   * worktree — and every directory Serena creates inside it — inherits an
+   * entry for the app user. Best-effort: filesystems without ACL support
+   * (or a missing `setfacl`) log once and fall back to the old behaviour.
+   */
+  private ensureWorktreeBaseAcl(base: string): void {
+    if (process.platform !== 'linux') return;
+
+    const aclUser = process.env.WORKTREE_ACL_USER || 'node';
+    try {
+      execFileSync('setfacl', ['-d', '-m', `u:${aclUser}:rwx`, base], {
+        stdio: 'ignore',
+      });
+    } catch (e: unknown) {
+      if (this.aclWarningLogged) return;
+      this.aclWarningLogged = true;
+      this.logger.warn(
+        `Could not apply default ACL to ${base} (${(e as Error).message}). ` +
+          'Worktrees with root-owned Serena metadata may be undeletable; ' +
+          'run Serena as the app user or grant it a shared UID.',
+      );
+    }
   }
 
   /**

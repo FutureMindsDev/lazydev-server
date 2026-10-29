@@ -114,6 +114,24 @@ describe('LlmService', () => {
       expect(assistantParam.reasoning_content).toBe('chain-of-thought here');
     });
 
+    it('round-trips an empty-string reasoning_content (present, not truthy)', () => {
+      new LlmService();
+      const ai = new AIMessage({
+        content: 'previous final summary',
+        additional_kwargs: {
+          // DeepSeek returns "" on some assistant turns but still requires
+          // the key to be echoed back on the next thinking-mode request.
+          reasoning_content: '',
+        },
+      });
+      const params = getConverter()({
+        messages: [new HumanMessage('continue'), ai],
+        model: 'deepseek-flash',
+      });
+      const assistantParam = params.find((p: any) => p.role === 'assistant');
+      expect(assistantParam).toHaveProperty('reasoning_content', '');
+    });
+
     it('round-trips extra_content on tool calls (Gemini thought_signature via proxy)', () => {
       new LlmService();
       const ai = new AIMessage({
