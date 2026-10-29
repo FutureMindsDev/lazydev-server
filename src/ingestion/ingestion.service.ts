@@ -74,7 +74,7 @@ export class IngestionService {
       // switch is on. Fail safe — any trouble means "regex already passed,
       // proceed" (old behavior), never a stuck webhook.
       if (await this.decision.isClefEnabled()) {
-        const stopped = await this.screenWithClef(
+        const stopped = await this.screenWithDecisionModel(
           title,
           body,
           repoName,
@@ -144,10 +144,12 @@ export class IngestionService {
   /**
    * Layer-1 screening with the decision provider. Returns true when the
    * job must NOT be queued (blocked or quarantined — both stop + alert).
+   * The provider is whatever `decide('guard', …)` resolves (Clef, Jev,
+   * llm-judge, …) — nothing here is Clef-specific.
    * Never throws: provider trouble, missing creds, or unclear verdicts
    * below the quarantine line all mean "proceed" (Layer 0 already passed).
    */
-  private async screenWithClef(
+  private async screenWithDecisionModel(
     title: string,
     body: string,
     repoName: string,

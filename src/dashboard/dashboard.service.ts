@@ -218,13 +218,22 @@ export class DashboardService {
   /** Small unauthenticated status for GET meta (no secrets inside). */
   async getPromptGuardMeta(): Promise<{
     enabled: boolean;
+    decisionActive: boolean;
+    decisionProvider: string;
+    /** @deprecated alias of decisionActive — see DashboardMeta. */
     clefActive: boolean;
+    /** @deprecated alias of decisionProvider — see DashboardMeta. */
     provider: string;
   }> {
     const status = await this.decision.getGuardStatus();
+    const decisionActive = status.clefEnabled;
     return {
       enabled: true,
-      clefActive: status.clefEnabled,
+      decisionActive,
+      decisionProvider: status.provider,
+      // Keep the old field names in the payload until the frontend moves
+      // over; they intentionally mirror the new ones (no behaviour change).
+      clefActive: decisionActive,
       provider: status.provider,
     };
   }

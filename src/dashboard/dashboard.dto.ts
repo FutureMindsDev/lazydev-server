@@ -62,7 +62,14 @@ export interface DashboardMeta {
   /** Prompt guard status (no secrets inside) for the settings UI. */
   promptGuard?: {
     enabled: boolean;
+    /** True when Layer-1 model screening is switched on (providers are
+     *  resolved by DecisionProviderService, not necessarily Clef). */
+    decisionActive: boolean;
+    /** Provider id that answers guard decisions (clef-workers, jev-*, …). */
+    decisionProvider: string;
+    /** @deprecated Use decisionActive. Kept for older dashboard builds. */
     clefActive: boolean;
+    /** @deprecated Use decisionProvider. Kept for older dashboard builds. */
     provider: string;
   };
 }
