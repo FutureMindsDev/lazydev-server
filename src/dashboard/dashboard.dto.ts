@@ -268,7 +268,11 @@ export interface SettingsDto {
 export interface GuardSettingsDto {
   /** Regex/normalize layer — always on, cannot be switched off. */
   regexAlwaysOn: boolean;
-  /** Effective Clef switch (env AND stored flag). */
+  /** Single master switch for all decision-model calls. */
+  decisionEnabled: boolean;
+  /** Raw model selector (DECISION_MODEL, or legacy DECISION_PROVIDER). */
+  decisionModel: string;
+  /** Effective Clef switch (master AND legacy Clef switch AND stored flag). */
   clefEnabled: boolean;
   /** Cloudflare account + token present? */
   clefConfigured: boolean;

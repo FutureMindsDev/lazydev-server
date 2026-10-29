@@ -32,11 +32,11 @@ describe('DecisionProviderService', () => {
       void svc.onModuleDestroy();
     });
 
-    it('boots (and logs status) without calling Clef when it is disabled', async () => {
+    it('boots (and logs status) without calling a provider when the master switch is off', async () => {
       const svc = new DecisionProviderService(
-        fakeConfig({ PROMPT_GUARD_CLEF_ENABLED: 'false' }),
+        fakeConfig({ DECISION_MODEL_ENABLED: 'false' }),
       );
-      // Disabled Clef must short-circuit before any Redis read or HTTP call.
+      // Master off must short-circuit before any Redis read or HTTP call.
       await expect(svc.onModuleInit()).resolves.toBeUndefined();
       void svc.onModuleDestroy();
     });
@@ -71,11 +71,89 @@ describe('DecisionProviderService', () => {
       expect(svc.isClefEnabledByEnv()).toBe(true);
       void svc.onModuleDestroy();
     });
+
+    it('DECISION_MODEL_ENABLED is the single master switch', () => {
+      const on = new DecisionProviderService(
+        fakeConfig({ DECISION_MODEL_ENABLED: 'true' }),
+      );
+      expect(on.isDecisionEnabledByEnv()).toBe(true);
+      // Master on + no legacy opt-out → Clef allowed.
+      expect(on.isClefEnabledByEnv()).toBe(true);
+      void on.onModuleDestroy();
+
+      const off = new DecisionProviderService(
+        fakeConfig({
+          DECISION_MODEL_ENABLED: 'false',
+          // Legacy Clef switch must NOT override the new master.
+          PROMPT_GUARD_CLEF_ENABLED: 'true',
+        }),
+      );
+      expect(off.isDecisionEnabledByEnv()).toBe(false);
+      expect(off.isClefEnabledByEnv()).toBe(false);
+      void off.onModuleDestroy();
+    });
+
+    it('legacy PROMPT_GUARD_CLEF_ENABLED still works when the master is absent', () => {
+      const svc = new DecisionProviderService(
+        fakeConfig({ PROMPT_GUARD_CLEF_ENABLED: 'true' }),
+      );
+      expect(svc.isDecisionEnabledByEnv()).toBe(true);
+      void svc.onModuleDestroy();
+    });
+
+    it('legacy PROMPT_GUARD_CLEF_ENABLED=false only opts Clef out', () => {
+      const svc = new DecisionProviderService(
+        fakeConfig({
+          DECISION_MODEL_ENABLED: 'true',
+          PROMPT_GUARD_CLEF_ENABLED: 'false',
+        }),
+      );
+      expect(svc.isDecisionEnabledByEnv()).toBe(true);
+      expect(svc.isClefEnabledByEnv()).toBe(false);
+      void svc.onModuleDestroy();
+    });
+  });
+
+  describe('DECISION_MODEL selector', () => {
+    it('accepts family aliases and full provider ids', () => {
+      const clef = new DecisionProviderService(fakeConfig({ DECISION_MODEL: 'clef' }));
+      expect(clef.resolveProviderId('guard')).toBe('clef-workers');
+      void clef.onModuleDestroy();
+
+      const jev = new DecisionProviderService(fakeConfig({ DECISION_MODEL: 'jev' }));
+      expect(jev.resolveProviderId('triage')).toBe('jev-typesafe');
+      void jev.onModuleDestroy();
+
+      const judge = new DecisionProviderService(fakeConfig({ DECISION_MODEL: 'llm-judge' }));
+      expect(judge.resolveProviderId()).toBe('llm-judge');
+      void judge.onModuleDestroy();
+
+      const full = new DecisionProviderService(
+        fakeConfig({ DECISION_MODEL: 'jev-openrouter' }),
+      );
+      expect(full.resolveProviderId('patch')).toBe('jev-openrouter');
+      void full.onModuleDestroy();
+    });
+
+    it('wins over the legacy DECISION_PROVIDER; per-gate overrides win over both', () => {
+      const svc = new DecisionProviderService(
+        fakeConfig({
+          DECISION_MODEL: 'jev',
+          DECISION_PROVIDER: 'llm-judge',
+          DECISION_PROVIDER_GUARD: 'clef-workers',
+        }),
+      );
+      expect(svc.resolveProviderId('triage')).toBe('jev-typesafe');
+      expect(svc.resolveProviderId('guard')).toBe('clef-workers');
+      void svc.onModuleDestroy();
+    });
   });
 
   describe('decide fallback chain', () => {
     it('falls back when primary is unconfigured, then throws for last resort', async () => {
-      const svc = new DecisionProviderService(fakeConfig({}));
+      const svc = new DecisionProviderService(
+        fakeConfig({ DECISION_MODEL_ENABLED: 'true' }),
+      );
       // clef-workers has no creds here AND llm-judge has no key → throws,
       // so the caller can apply regex-only / old heuristic.
       await expect(
@@ -84,9 +162,26 @@ describe('DecisionProviderService', () => {
       void svc.onModuleDestroy();
     });
 
+    it('refuses to call any provider when the master switch is off', async () => {
+      const svc = new DecisionProviderService(
+        fakeConfig({
+          DECISION_MODEL_ENABLED: 'false',
+          DECISION_MODEL: 'jev',
+          DECISION_FALLBACK: 'llm-judge',
+        }),
+      );
+      await expect(
+        svc.decide('guard', 's', [{ id: 'q', type: 'bool', text: 't' }]),
+      ).rejects.toThrow(/DECISION_MODEL_ENABLED/);
+      void svc.onModuleDestroy();
+    });
+
     it('local-weight ids fail with a clear not-built error', async () => {
       const svc = new DecisionProviderService(
-        fakeConfig({ DECISION_PROVIDER: 'laya-local' }),
+        fakeConfig({
+          DECISION_MODEL_ENABLED: 'true',
+          DECISION_PROVIDER: 'laya-local',
+        }),
       );
       await expect(
         svc.decide('guard', 's', [{ id: 'q', type: 'bool', text: 't' }]),
@@ -96,7 +191,10 @@ describe('DecisionProviderService', () => {
 
     it('free-first: paid primary falls back to clef, never llm-judge', async () => {
       const svc = new DecisionProviderService(
-        fakeConfig({ DECISION_PROVIDER: 'jev-typesafe' }),
+        fakeConfig({
+          DECISION_MODEL_ENABLED: 'true',
+          DECISION_PROVIDER: 'jev-typesafe',
+        }),
       );
       jest.spyOn(svc, 'isClefEnabled').mockResolvedValue(true);
       // jev (no key) → clef-workers (no creds) → throw. The error must
@@ -110,6 +208,7 @@ describe('DecisionProviderService', () => {
     it('explicit DECISION_FALLBACK=llm-judge opts into the paid fallback', async () => {
       const svc = new DecisionProviderService(
         fakeConfig({
+          DECISION_MODEL_ENABLED: 'true',
           DECISION_PROVIDER: 'laya-local',
           DECISION_FALLBACK: 'llm-judge',
         }),
@@ -123,9 +222,10 @@ describe('DecisionProviderService', () => {
       void svc.onModuleDestroy();
     });
 
-    it('skips Clef entirely when it is disabled', async () => {
+    it('skips Clef entirely when the legacy Clef switch opts it out', async () => {
       const svc = new DecisionProviderService(
         fakeConfig({
+          DECISION_MODEL_ENABLED: 'true',
           PROMPT_GUARD_CLEF_ENABLED: 'false',
           DECISION_PROVIDER: 'clef-workers',
           DECISION_FALLBACK: 'llm-judge',
@@ -142,6 +242,7 @@ describe('DecisionProviderService', () => {
     it('does not fall back to Clef when the primary is not Clef and Clef is disabled', async () => {
       const svc = new DecisionProviderService(
         fakeConfig({
+          DECISION_MODEL_ENABLED: 'true',
           PROMPT_GUARD_CLEF_ENABLED: 'false',
           DECISION_PROVIDER: 'jev-typesafe',
         }),

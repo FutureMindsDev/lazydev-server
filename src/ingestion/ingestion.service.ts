@@ -70,10 +70,9 @@ export class IngestionService {
         return `blocked-guard-${repoName}-${issueNumber}-${Date.now()}`;
       }
 
-      // Layer 1 (decision model, e.g. Clef free tier): only when the env
-      // switch is on. Fail safe — any trouble means "regex already passed,
-      // proceed" (old behavior), never a stuck webhook.
-      if (await this.decision.isClefEnabled()) {
+      // Layer 1 (decision models): one master switch for every provider.
+      // Fail safe — any trouble means "regex already passed, proceed".
+      if (await this.decision.isDecisionEnabled()) {
         const stopped = await this.screenWithDecisionModel(
           title,
           body,

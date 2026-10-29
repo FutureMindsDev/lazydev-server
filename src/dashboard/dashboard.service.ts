@@ -226,14 +226,13 @@ export class DashboardService {
     provider: string;
   }> {
     const status = await this.decision.getGuardStatus();
-    const decisionActive = status.clefEnabled;
     return {
       enabled: true,
-      decisionActive,
+      decisionActive: status.decisionEnabled,
       decisionProvider: status.provider,
-      // Keep the old field names in the payload until the frontend moves
-      // over; they intentionally mirror the new ones (no behaviour change).
-      clefActive: decisionActive,
+      // Deprecated aliases (older dashboard builds): keep their ORIGINAL
+      // meanings — clefActive is the Clef toggle, not the master switch.
+      clefActive: status.clefEnabled,
       provider: status.provider,
     };
   }

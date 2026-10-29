@@ -48,6 +48,15 @@ const NOT_IMPLEMENTED: DecisionProviderId[] = [
   'openjev-local',
 ];
 
+/** New single selector (DECISION_MODEL) accepts family shortcuts too. */
+const DECISION_MODEL_ALIASES: Record<string, DecisionProviderId> = {
+  clef: 'clef-workers',
+  'clef-flash': 'clef-workers',
+  jev: 'jev-typesafe',
+  llm: 'llm-judge',
+  judge: 'llm-judge',
+};
+
 /** Redis key for the dashboard Clef toggle. Absent = follow the env. */
 const CLEF_FLAG_KEY = 'settings:guard:clef';
 
@@ -86,17 +95,27 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
     const gates: DecisionGate[] = ['guard', 'triage', 'patch', 'validation'];
     const routes = gates.map((g) => `${g}=${this.resolveProviderId(g)}`).join(', ');
     const fallback = this.resolveFallbackId();
+    const decisionEnabled = await this.isDecisionEnabled();
     const clefEnabled = await this.isClefEnabled();
     const clefConfigured = this.areClefCredsPresent();
     const clefModel = this.clefModelName();
 
     this.logger.log(
-      `System One decision layer — ${routes}; fallback=${fallback}; ` +
+      `System One decision layer — master=${decisionEnabled ? 'on' : 'off'}, ` +
+        `model=${this.decisionModelSetting()} (${routes}); fallback=${fallback}; ` +
         `Clef: ${clefEnabled ? 'enabled' : 'disabled'}` +
         (clefEnabled
           ? ` (model=${clefModel}, creds ${clefConfigured ? 'present' : 'MISSING'})`
           : ''),
     );
+
+    if (!decisionEnabled) {
+      this.logger.log(
+        'System One: decision models are off (DECISION_MODEL_ENABLED=false) — ' +
+          'regex + local heuristics only.',
+      );
+      return;
+    }
 
     // Say explicitly which providers get a real boot probe (Clef only — it
     // is free) and which log "connected" on their first real call. Keeps
@@ -108,7 +127,7 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
     const firstUse = active.filter((id) => !bootProbe.includes(id));
     if (active.length === 0) {
       this.logger.warn(
-        'System One: no provider candidates — Clef is disabled and the fallback is ' +
+        'System One: no provider candidates — Clef is off and the fallback is ' +
           'also Clef. Gates will use their local heuristics.',
       );
     } else {
@@ -123,17 +142,27 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
 
     if (!clefEnabled) {
       this.logger.log(
-        'System One: Clef is off (PROMPT_GUARD_CLEF_ENABLED=false) — Layer-1 screening ' +
-          'skipped; gates naming clef-workers use the fallback or their local heuristic.',
+        'System One: Clef is off — clef-workers is excluded from every chain; ' +
+          'the configured non-Clef providers still run.',
       );
       return;
     }
     if (!clefConfigured) {
-      this.logger.warn(
-        'System One: Clef is enabled but CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN ' +
-          'are missing — every Clef call will fail and gates will fall back. ' +
-          'Set them or disable Clef.',
+      const clefPrimary = gates.some(
+        (g) => this.resolveProviderId(g) === 'clef-workers',
       );
+      if (clefPrimary) {
+        this.logger.warn(
+          'System One: Clef serves at least one gate but CLOUDFLARE_ACCOUNT_ID/' +
+            'CLOUDFLARE_API_TOKEN are missing — those calls will fail and fall back. ' +
+            'Set them or pick another DECISION_MODEL.',
+        );
+      } else {
+        this.logger.log(
+          'System One: Clef has no credentials — it is only an implicit fallback ' +
+            'and will be skipped if the primary fails.',
+        );
+      }
       return;
     }
 
@@ -187,23 +216,36 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Which provider serves this gate. Order: per-gate env override →
-   *  DECISION_PROVIDER → built-in default. Unknown ids warn + default. */
+   *  DECISION_MODEL (single selector; family aliases allowed) →
+   *  legacy DECISION_PROVIDER → built-in default. Unknown ids warn + default. */
   resolveProviderId(gate?: DecisionGate): DecisionProviderId {
     const fallbackDefault: DecisionProviderId = 'clef-workers';
     const candidates = [
       gate ? this.configService.get<string>(`DECISION_PROVIDER_${gate.toUpperCase()}`) : undefined,
+      this.configService.get<string>('DECISION_MODEL'),
       this.configService.get<string>('DECISION_PROVIDER'),
     ];
     for (const raw of candidates) {
-      const id = (raw || '').trim() as DecisionProviderId;
-      if (!id) continue;
+      const setting = (raw || '').trim();
+      if (!setting) continue;
+      const id = (DECISION_MODEL_ALIASES[setting.toLowerCase()] ??
+        setting) as DecisionProviderId;
       if (KNOWN_PROVIDERS.includes(id)) return id;
       this.logger.warn(
-        `Unknown decision provider "${id}" — falling back to ${fallbackDefault}.`,
+        `Unknown decision model "${setting}" — falling back to ${fallbackDefault}.`,
       );
       return fallbackDefault;
     }
     return fallbackDefault;
+  }
+
+  /** Raw selector for logs/status: DECISION_MODEL, else legacy provider id. */
+  decisionModelSetting(): string {
+    return (
+      this.configService.get<string>('DECISION_MODEL') ||
+      this.configService.get<string>('DECISION_PROVIDER') ||
+      'clef-workers'
+    ).trim();
   }
 
   /** Fallback provider id: explicit DECISION_FALLBACK wins, otherwise the
@@ -272,6 +314,12 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
     state: string,
     questions: DecisionQuestion[],
   ): Promise<DecisionResult> {
+    if (!(await this.isDecisionEnabled())) {
+      throw new Error(
+        'Decision models are disabled (DECISION_MODEL_ENABLED=false) — ' +
+          'gates fall back to regex/heuristics.',
+      );
+    }
     const clefEnabled = await this.isClefEnabled();
     const candidates = this.providerChain(gate, clefEnabled);
 
@@ -323,13 +371,35 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
     throw lastError;
   }
 
-  /** Env master switch (default off). Env false ALWAYS wins over storage. */
-  isClefEnabledByEnv(): boolean {
+  /** Single master switch: DECISION_MODEL_ENABLED. Falls back to the
+   *  legacy Clef-only switch so existing .env files keep working. Default off. */
+  isDecisionEnabledByEnv(): boolean {
+    const master = (this.configService.get<string>('DECISION_MODEL_ENABLED') || '')
+      .trim()
+      .toLowerCase();
+    if (master === 'true') return true;
+    if (master === 'false') return false;
     return (
       (this.configService.get<string>('PROMPT_GUARD_CLEF_ENABLED') || '')
         .trim()
         .toLowerCase() === 'true'
     );
+  }
+
+  /** Effective master switch (env today; storage-free on purpose). */
+  async isDecisionEnabled(): Promise<boolean> {
+    return this.isDecisionEnabledByEnv();
+  }
+
+  /** Clef is allowed when the master switch is on. When the master is on,
+   *  a legacy PROMPT_GUARD_CLEF_ENABLED=false still opts Clef out (per-model
+   *  switch), while an absent legacy value follows the master. */
+  isClefEnabledByEnv(): boolean {
+    if (!this.isDecisionEnabledByEnv()) return false;
+    const legacy = (this.configService.get<string>('PROMPT_GUARD_CLEF_ENABLED') || '')
+      .trim()
+      .toLowerCase();
+    return legacy === '' ? true : legacy === 'true';
   }
 
   /** Effective switch = env AND stored flag (absent stored flag = follow env). */
@@ -364,6 +434,8 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
   /** Status object for GET settings + meta (never includes the token). */
   async getGuardStatus(): Promise<{
     regexAlwaysOn: boolean;
+    decisionEnabled: boolean;
+    decisionModel: string;
     clefEnabled: boolean;
     clefConfigured: boolean;
     clefModel: string;
@@ -378,6 +450,8 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
     };
     return {
       regexAlwaysOn: true,
+      decisionEnabled: await this.isDecisionEnabled(),
+      decisionModel: this.decisionModelSetting(),
       clefEnabled: await this.isClefEnabled(),
       clefConfigured: this.areClefCredsPresent(),
       clefModel: this.clefModelName(),
