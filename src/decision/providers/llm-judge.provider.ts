@@ -113,7 +113,10 @@ export class LlmJudgeProvider {
       const probability =
         typeof a.probability === 'number' && Number.isFinite(a.probability)
           ? Math.min(1, Math.max(0, a.probability))
-          : 0.5;
+          : // Missing number = unknown, not 0.5. 0.5 sits above the default
+            // quarantine line (0.4), so inventing it turns every malformed
+            // judge reply into a false positive. Matches Clef's parser.
+            0;
       answers[q.id] =
         q.type === 'score'
           ? {

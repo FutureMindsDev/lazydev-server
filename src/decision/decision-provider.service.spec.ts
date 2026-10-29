@@ -322,6 +322,25 @@ describe('parseClefAnswer', () => {
   });
 });
 
+describe('LlmJudgeProvider', () => {
+  it('uses 0 (not 0.5) when the judge omits a probability', async () => {
+    const { LlmJudgeProvider } = require('./providers/llm-judge.provider');
+    const fetchFn = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [
+          { message: { content: '{"answers":{"q":{"option":"no"}}}' } },
+        ],
+      }),
+    });
+    const provider = new LlmJudgeProvider({ apiKey: 'k', fetchFn });
+    const result = await provider.decide('s', [
+      { id: 'q', type: 'bool', text: 't' },
+    ]);
+    expect(result.answers['q']).toEqual({ option: 'no', probability: 0 });
+  });
+});
+
 describe('extractJsonObject', () => {
   it('pulls JSON out of prose and fences', () => {
     expect(extractJsonObject('```json\n{"a": 1}\n```')).toEqual({ a: 1 });

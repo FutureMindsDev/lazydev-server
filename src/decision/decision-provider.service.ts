@@ -98,6 +98,29 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
           : ''),
     );
 
+    // Say explicitly which providers get a real boot probe (Clef only — it
+    // is free) and which log "connected" on their first real call. Keeps
+    // "no connected line" from being mistaken for "provider is broken".
+    const active = [
+      ...new Set(gates.flatMap((g) => this.providerChain(g, clefEnabled))),
+    ];
+    const bootProbe = clefEnabled && clefConfigured ? ['clef-workers'] : [];
+    const firstUse = active.filter((id) => !bootProbe.includes(id));
+    if (active.length === 0) {
+      this.logger.warn(
+        'System One: no provider candidates — Clef is disabled and the fallback is ' +
+          'also Clef. Gates will use their local heuristics.',
+      );
+    } else {
+      this.logger.log(
+        'System One connectivity — ' +
+          `boot probe: ${bootProbe.length ? 'clef-workers (free tier)' : 'none'}; ` +
+          `"connected" on first real call: ${
+            firstUse.length ? firstUse.join(', ') : 'none (Clef already probed)'
+          }`,
+      );
+    }
+
     if (!clefEnabled) {
       this.logger.log(
         'System One: Clef is off (PROMPT_GUARD_CLEF_ENABLED=false) — Layer-1 screening ' +
@@ -138,6 +161,29 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
     return this.configService.get<string>('PROMPT_GUARD_MODEL', 'clef-flash') === 'clef'
       ? 'clef'
       : 'clef-flash';
+  }
+
+  /** Ordered provider candidates for one gate: primary → free Clef tier
+   *  (skipped when disabled) → explicitly configured fallback. Shared by
+   *  decide() and the boot log so the two can never disagree. */
+  private providerChain(
+    gate: DecisionGate,
+    clefEnabled: boolean,
+  ): DecisionProviderId[] {
+    const candidates: DecisionProviderId[] = [];
+    const add = (id: DecisionProviderId) => {
+      if (id === 'clef-workers' && !clefEnabled) return;
+      if (!candidates.includes(id)) candidates.push(id);
+    };
+    add(this.resolveProviderId(gate));
+    // The free Clef tier is the implicit fallback. Skipped when the operator
+    // turned Clef off (the explicit fallback below still runs).
+    add('clef-workers');
+    // Paid-capable fallback runs ONLY on explicit opt-in. resolveFallbackId
+    // returns clef-workers unless DECISION_FALLBACK names something else,
+    // so a non-Clef value here means the operator chose it.
+    add(this.resolveFallbackId());
+    return candidates;
   }
 
   /** Which provider serves this gate. Order: per-gate env override →
@@ -227,20 +273,7 @@ export class DecisionProviderService implements OnModuleInit, OnModuleDestroy {
     questions: DecisionQuestion[],
   ): Promise<DecisionResult> {
     const clefEnabled = await this.isClefEnabled();
-    const primary = this.resolveProviderId(gate);
-    const candidates: DecisionProviderId[] = [];
-    const addCandidate = (id: DecisionProviderId) => {
-      if (id === 'clef-workers' && !clefEnabled) return;
-      if (!candidates.includes(id)) candidates.push(id);
-    };
-    addCandidate(primary);
-    // The free Clef tier is the implicit fallback. Skip it when the operator
-    // turned Clef off (the explicit fallback below still runs).
-    addCandidate('clef-workers');
-    // Paid-capable fallback runs ONLY on explicit opt-in. resolveFallbackId
-    // returns clef-workers unless DECISION_FALLBACK names something else,
-    // so a non-Clef value here means the operator chose it.
-    addCandidate(this.resolveFallbackId());
+    const candidates = this.providerChain(gate, clefEnabled);
 
     if (candidates.length === 0) {
       throw new Error(
