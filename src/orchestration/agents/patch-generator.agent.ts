@@ -1,17 +1,3 @@
-/**
- * Copyright (c) 2026 FutureMindsDev. All rights reserved.
- *
- * LazyDev™ is a trademark of FutureMindsDev.
- * Organization : https://github.com/FutureMindsDev
- *
- * Authors:
- *   Arkar Chan Myae  <https://github.com/arkar-chanmyae>
- *   Khin Me Me Latt  <https://github.com/KhinMeMeLatt>
- *
- * Licensed under the MIT License.
- * See LICENSE file in the project root for full license information.
- */
-
 /* eslint-disable */
 import { Injectable, Logger } from '@nestjs/common';
 import { AgentState } from '../graph.state';
@@ -196,13 +182,14 @@ export class PatchGeneratorAgent {
       const systemPrompt = new SystemMessage(
         `You are an autonomous AI coding agent. Implement the plan below by calling tools to read and edit files — you have no other way to make changes.\n\n` +
           `RULES:\n` +
-          `1. You MUST call read_file on a file before editing it with replace_symbol_body, insert_after_symbol, insert_before_symbol, rename_symbol, or safe_delete_symbol. Editing an unread file is rejected.\n` +
+          `1. You MUST call read_file on a file before editing it with replace_symbol_body, insert_after_symbol, insert_before_symbol, rename_symbol, safe_delete_symbol, or edit_text_file. Editing an unread file is rejected.\n` +
           `2. The plan's file paths and symbol names are a hypothesis, not verified fact — they were written before anyone confirmed them against the real file. If a symbol name from the plan doesn't match what you find, use the ACTUAL name from the file (use find_symbol to resolve it). NEVER rename or restructure existing code just to make it match the plan.\n` +
           `3. For files the plan says to create, the plan's path is the decision — use create_text_file. It fails if the path already exists; use an edit tool instead in that case.\n` +
-          `4. Match the existing code's style, exports, and patterns. Do not rewrite working code beyond what the plan asks for.\n` +
-          `5. When every change from the plan has been applied, respond with a short plain-text summary and stop calling tools.\n` +
-          `6. Do NOT claim the task is complete, that tests pass, or that the fix works — you do not run tests and validation happens after you. Summarize only the changes you actually applied.\n` +
-          `7. replace_symbol_body replaces ONE symbol's complete definition only. Never pass the whole file: no "use client"/"use server" directives, no import statements, and no other symbols/interfaces — the file already has them and duplicates break the build.`,
+          `4. For files with no code symbols (CSS, JSON, Markdown, YAML, plain text) symbol tools ALWAYS fail ("path is ignored") — use edit_text_file for those, never retry symbol tools on them.\n` +
+          `5. Match the existing code's style, exports, and patterns. Do not rewrite working code beyond what the plan asks for.\n` +
+          `6. When every change from the plan has been applied, respond with a short plain-text summary and stop calling tools.\n` +
+          `7. Do NOT claim the task is complete, that tests pass, or that the fix works — you do not run tests and validation happens after you. Summarize only the changes you actually applied.\n` +
+          `8. replace_symbol_body replaces ONE symbol's complete definition only. Never pass the whole file: no "use client"/"use server" directives, no import statements, and no other symbols/interfaces — the file already has them and duplicates break the build.`,
       );
 
       let userPromptContent =
@@ -302,7 +289,7 @@ export class PatchGeneratorAgent {
   }
 
   /**
-   * The generator's tool set. Deliberately small (9 tools) — larger tool
+   * The generator's tool set. Deliberately small (10 tools) — larger tool
    * sets measurably degrade tool-selection accuracy in agentic loops.
    * Notably absent: a whole-file delete tool. Combining "delete an existing
    * file" with "create a file at that same path" is exactly the pattern
@@ -313,6 +300,14 @@ export class PatchGeneratorAgent {
    * rewrites can go through `replace_symbol_body` on the file's top-level
    * symbol, or be added back later as a reviewed, more restricted tool if a
    * real need shows up.
+   *
+   * `edit_text_file` is the one exception to "everything goes through
+   * Serena": files Serena's language servers do not cover (CSS, JSON,
+   * Markdown, ...) can never be edited with symbol tools ("path is
+   * ignored"), so exact-match text replacement on disk is the only path.
+   * It keeps the same read-before-edit gate and worktree confinement, and
+   * requires an exact single match so it cannot silently rewrite the wrong
+   * block.
    */
   private getTools(
     worktreePath: string,
@@ -321,7 +316,7 @@ export class PatchGeneratorAgent {
     const readFile = new DynamicStructuredTool({
       name: 'read_file',
       description:
-        'Read the exact current contents of a file. You MUST call this on a file before editing it with replace_symbol_body, insert_after_symbol, insert_before_symbol, rename_symbol, or safe_delete_symbol.',
+        'Read the exact current contents of a file. You MUST call this on a file before editing it with replace_symbol_body, insert_after_symbol, insert_before_symbol, rename_symbol, safe_delete_symbol, or edit_text_file.',
       schema: z.object({
         filePath: z
           .string()
@@ -442,6 +437,15 @@ export class PatchGeneratorAgent {
         const result = await apply();
         if (result?.isError) {
           const errText = extractAnyMcpText(result);
+          if (/path is ignored/i.test(errText)) {
+            session.blockedActions.push(`${summary}: language not covered`);
+            return (
+              `Error: ${errText}. This file type is not covered by Serena's ` +
+              `language server, so symbol tools can never work on it. Use ` +
+              `edit_text_file (after read_file) to edit it directly instead — ` +
+              `do NOT retry symbol tools on this file.`
+            );
+          }
           if (/no symbol matching/i.test(errText)) {
             const suggestionResult = await this.serenaMcp
               .findSymbol(symbolName, {
@@ -683,6 +687,83 @@ export class PatchGeneratorAgent {
       },
     });
 
+    /**
+     * Direct text edit that bypasses Serena's language-server tools. For
+     * files Serena's LSP does not cover (CSS, JSON, Markdown, YAML, plain
+     * text, ...), symbol tools fail with "path is ignored" — this tool
+     * edits the file on disk instead, with the same read-before-edit gate
+     * and worktree confinement as every other edit tool.
+     */
+    const editTextFile = new DynamicStructuredTool({
+      name: 'edit_text_file',
+      description:
+        'Edit an existing file by exact text replacement, WITHOUT Serena. Use this when symbol tools fail on a file (e.g. "path is ignored" for CSS/JSON/Markdown/YAML) or for any plain-text file with no symbols. Requires read_file on this file first. oldText must appear EXACTLY once in the file (copy it verbatim from read_file); newText replaces it.',
+      schema: z.object({
+        filePath: z.string(),
+        oldText: z
+          .string()
+          .describe(
+            'Exact text to replace, copied verbatim from read_file output. Must occur exactly once.',
+          ),
+        newText: z.string().describe('Replacement text.'),
+      }),
+      func: async ({
+        filePath,
+        oldText,
+        newText,
+      }: {
+        filePath: string;
+        oldText: string;
+        newText: string;
+      }) => {
+        const summary = `EDIT ${filePath}`;
+        const blocked = requireRead(filePath);
+        if (blocked) {
+          session.blockedActions.push(`${summary}: not read before edit`);
+          return blocked;
+        }
+        let absolutePath: string;
+        try {
+          absolutePath = assertSafeWorktreePath(worktreePath, filePath);
+        } catch (e: unknown) {
+          const message = e instanceof Error ? e.message : String(e);
+          session.blockedActions.push(`${summary}: ${message}`);
+          return `Error: ${message}`;
+        }
+        try {
+          const current = await fs.readFile(absolutePath, 'utf8');
+          const occurrences = current.split(oldText).length - 1;
+          if (occurrences === 0) {
+            session.blockedActions.push(`${summary}: oldText not found`);
+            return (
+              `Error: oldText not found in "${filePath}". Copy it exactly ` +
+              `from read_file output (whitespace included) and retry.`
+            );
+          }
+          if (occurrences > 1) {
+            session.blockedActions.push(
+              `${summary}: oldText matches ${occurrences}x`,
+            );
+            return (
+              `Error: oldText matches ${occurrences} places in "${filePath}". ` +
+              `Include more surrounding lines so it matches exactly once, then retry.`
+            );
+          }
+          await fs.writeFile(
+            absolutePath,
+            current.replace(oldText, newText),
+            'utf8',
+          );
+          session.appliedActions.push(summary);
+          return `OK: ${summary}`;
+        } catch (e: unknown) {
+          const message = e instanceof Error ? e.message : String(e);
+          session.blockedActions.push(`${summary}: ${message}`);
+          return `Error: ${message}`;
+        }
+      },
+    });
+
     return [
       readFile,
       getSymbolsOverview,
@@ -693,6 +774,7 @@ export class PatchGeneratorAgent {
       renameSymbolTool,
       safeDeleteSymbol,
       createTextFile,
+      editTextFile,
     ];
   }
 }

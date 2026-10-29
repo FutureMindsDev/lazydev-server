@@ -1,20 +1,10 @@
-/**
- * Copyright (c) 2026 FutureMindsDev. All rights reserved.
- *
- * LazyDev™ is a trademark of FutureMindsDev.
- * Organization : https://github.com/FutureMindsDev
- *
- * Authors:
- *   Arkar Chan Myae  <https://github.com/arkar-chanmyae>
- *   Khin Me Me Latt  <https://github.com/KhinMeMeLatt>
- *
- * Licensed under the MIT License.
- * See LICENSE file in the project root for full license information.
- */
-
 import { Test, TestingModule } from '@nestjs/testing';
 import * as fs from 'fs/promises';
-import { AIMessage, HumanMessage, SystemMessage } from '@langchain/core/messages';
+import {
+  AIMessage,
+  HumanMessage,
+  SystemMessage,
+} from '@langchain/core/messages';
 import { PatchGeneratorAgent } from './patch-generator.agent';
 import { LlmService } from '../llm.service';
 import { SerenaMcpService } from '../../intelligence/serena-mcp.service';
@@ -26,6 +16,18 @@ const mockedFs = fs as jest.Mocked<typeof fs>;
 const ok = () => ({ isError: false, content: [{ text: 'ok' }] });
 const mcpError = (text: string) => ({ isError: true, content: [{ text }] });
 const mcpText = (text: string) => ({ isError: false, content: [{ text }] });
+
+/** Minimal shape of the mocked LLM model (bindTools + invoke). */
+interface MockModelLike {
+  bindTools: jest.Mock;
+  invoke: jest.Mock;
+}
+
+/** Minimal shape of a message passed to the mocked LLM invoke(). */
+interface MockInvokeMessage {
+  _getType?: () => string;
+  content: string;
+}
 
 /** Mock LLM model that supports bindTools(). Returns queued responses in order. */
 class MockLlmModel {
@@ -44,8 +46,14 @@ class MockLlmModel {
 }
 
 /** Builds an AIMessage with tool_calls (simulating the LLM requesting tools). */
-const aiWithToolCalls = (toolCalls: any[], content = '') =>
-  new AIMessage({ content, tool_calls: toolCalls });
+const aiWithToolCalls = (
+  toolCalls: Array<{
+    name: string;
+    args: Record<string, unknown>;
+    id?: string;
+  }>,
+  content = '',
+) => new AIMessage({ content, tool_calls: toolCalls });
 
 /** Builds an AIMessage with no tool calls (simulating the LLM's final summary). */
 const aiFinal = (content: string) => new AIMessage({ content, tool_calls: [] });
@@ -64,7 +72,11 @@ describe('PatchGeneratorAgent', () => {
     safeDeleteSymbol: jest.Mock;
     createTextFile: jest.Mock;
   };
-  let llmService: { getModel: jest.Mock; logTokenUsage: jest.Mock; getProviderKind: jest.Mock };
+  let llmService: {
+    getModel: jest.Mock;
+    logTokenUsage: jest.Mock;
+    getProviderKind: jest.Mock;
+  };
   const worktreePath = '/app/worktrees/mcp-test';
 
   const stateWith = (overrides: Partial<AgentState> = {}): AgentState =>
@@ -80,10 +92,12 @@ describe('PatchGeneratorAgent', () => {
     serenaMcp = {
       activateProject: jest.fn().mockResolvedValue(undefined),
       readFile: jest.fn().mockResolvedValue(mcpText('file contents here')),
-      getSymbolsOverview: jest.fn().mockResolvedValue(
-        mcpText('{"Function": ["handleRequest"]}'),
-      ),
-      findSymbol: jest.fn().mockResolvedValue(mcpText('[{"name": "handleRequest"}]')),
+      getSymbolsOverview: jest
+        .fn()
+        .mockResolvedValue(mcpText('{"Function": ["handleRequest"]}')),
+      findSymbol: jest
+        .fn()
+        .mockResolvedValue(mcpText('[{"name": "handleRequest"}]')),
       replaceSymbolBody: jest.fn().mockResolvedValue(ok()),
       insertAfterSymbol: jest.fn().mockResolvedValue(ok()),
       insertBeforeSymbol: jest.fn().mockResolvedValue(ok()),
@@ -131,7 +145,9 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const readFile = tools.find((t) => t.name === 'read_file')!;
 
-      const result = await readFile.invoke({ filePath: 'src/app.ts' });
+      const result = (await readFile.invoke({
+        filePath: 'src/app.ts',
+      })) as string;
 
       expect(serenaMcp.readFile).toHaveBeenCalledWith('src/app.ts');
       expect(result).toBe('file contents here');
@@ -154,7 +170,9 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const readFile = tools.find((t) => t.name === 'read_file')!;
 
-      const result = await readFile.invoke({ filePath: 'src/missing.ts' });
+      const result = (await readFile.invoke({
+        filePath: 'src/missing.ts',
+      })) as string;
 
       expect(result).toContain('Error reading "src/missing.ts"');
       expect(result).toContain('ENOENT');
@@ -166,7 +184,9 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const tool = tools.find((t) => t.name === 'get_symbols_overview')!;
 
-      const result = await tool.invoke({ filePath: 'src/app.ts' });
+      const result = (await tool.invoke({
+        filePath: 'src/app.ts',
+      })) as string;
 
       expect(serenaMcp.getSymbolsOverview).toHaveBeenCalledWith('src/app.ts');
       expect(result).toContain('handleRequest');
@@ -194,11 +214,11 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const replaceTool = tools.find((t) => t.name === 'replace_symbol_body')!;
 
-      const result = await replaceTool.invoke({
+      const result = (await replaceTool.invoke({
         filePath: 'src/app.ts',
         symbolName: 'handleRequest',
         newBody: 'function handleRequest() { return 1; }',
-      });
+      })) as string;
 
       expect(result).toContain('must call read_file');
       expect(serenaMcp.replaceSymbolBody).not.toHaveBeenCalled();
@@ -208,11 +228,11 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const tool = tools.find((t) => t.name === 'insert_after_symbol')!;
 
-      const result = await tool.invoke({
+      const result = (await tool.invoke({
         filePath: 'src/app.ts',
         symbolName: 'handleRequest',
         newBody: 'export const x = 1;',
-      });
+      })) as string;
 
       expect(result).toContain('must call read_file');
       expect(serenaMcp.insertAfterSymbol).not.toHaveBeenCalled();
@@ -222,11 +242,11 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const tool = tools.find((t) => t.name === 'insert_before_symbol')!;
 
-      const result = await tool.invoke({
+      const result = (await tool.invoke({
         filePath: 'src/app.ts',
         symbolName: 'handleRequest',
         newBody: 'export const x = 1;',
-      });
+      })) as string;
 
       expect(result).toContain('must call read_file');
       expect(serenaMcp.insertBeforeSymbol).not.toHaveBeenCalled();
@@ -236,11 +256,11 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const tool = tools.find((t) => t.name === 'rename_symbol')!;
 
-      const result = await tool.invoke({
+      const result = (await tool.invoke({
         filePath: 'src/app.ts',
         symbolName: 'oldName',
         newName: 'newName',
-      });
+      })) as string;
 
       expect(result).toContain('must call read_file');
       expect(serenaMcp.renameSymbol).not.toHaveBeenCalled();
@@ -250,10 +270,10 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const tool = tools.find((t) => t.name === 'safe_delete_symbol')!;
 
-      const result = await tool.invoke({
+      const result = (await tool.invoke({
         filePath: 'src/app.ts',
         symbolName: 'deadCode',
-      });
+      })) as string;
 
       expect(result).toContain('must call read_file');
       expect(serenaMcp.safeDeleteSymbol).not.toHaveBeenCalled();
@@ -265,11 +285,11 @@ describe('PatchGeneratorAgent', () => {
       const replaceTool = tools.find((t) => t.name === 'replace_symbol_body')!;
 
       await readFile.invoke({ filePath: 'src/app.ts' });
-      const result = await replaceTool.invoke({
+      const result = (await replaceTool.invoke({
         filePath: 'src/app.ts',
         symbolName: 'handleRequest',
         newBody: 'function handleRequest() { return 1; }',
-      });
+      })) as string;
 
       expect(result).toContain('OK');
       expect(serenaMcp.replaceSymbolBody).toHaveBeenCalledWith(
@@ -305,6 +325,104 @@ describe('PatchGeneratorAgent', () => {
     });
   });
 
+  // ─── edit_text_file (Serena bypass for non-symbol files) ──────────
+
+  describe('tools — edit_text_file', () => {
+    const cssBefore =
+      '.dark {\n  --background: #020617;\n  --border: #1e293b;\n}\n';
+
+    it('is rejected if the file was not read first', async () => {
+      const tools = agent.getToolsForSession(worktreePath);
+      const tool = tools.find((t) => t.name === 'edit_text_file')!;
+
+      const result = (await tool.invoke({
+        filePath: 'app/globals.css',
+        oldText: '--background: #020617;',
+        newText: '--background: #0f172a;',
+      })) as string;
+
+      expect(result).toContain('must call read_file');
+      expect(mockedFs.readFile).not.toHaveBeenCalled();
+      expect(mockedFs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it('replaces the exact single match on disk and records the change', async () => {
+      mockedFs.readFile.mockResolvedValue(cssBefore);
+      const tools = agent.getToolsForSession(worktreePath);
+      const readFile = tools.find((t) => t.name === 'read_file')!;
+      const tool = tools.find((t) => t.name === 'edit_text_file')!;
+
+      await readFile.invoke({ filePath: 'app/globals.css' });
+      const result = (await tool.invoke({
+        filePath: 'app/globals.css',
+        oldText: '  --background: #020617;',
+        newText: '  --background: #0f172a;',
+      })) as string;
+
+      expect(result).toContain('OK: EDIT app/globals.css');
+      expect(mockedFs.writeFile).toHaveBeenCalledWith(
+        expect.stringContaining('app/globals.css'),
+        expect.stringContaining('--background: #0f172a;'),
+        'utf8',
+      );
+    });
+
+    it('refuses when oldText is not found', async () => {
+      mockedFs.readFile.mockResolvedValue(cssBefore);
+      const tools = agent.getToolsForSession(worktreePath);
+      const readFile = tools.find((t) => t.name === 'read_file')!;
+      const tool = tools.find((t) => t.name === 'edit_text_file')!;
+
+      await readFile.invoke({ filePath: 'app/globals.css' });
+      const result = (await tool.invoke({
+        filePath: 'app/globals.css',
+        oldText: '  --background: #ffffff;',
+        newText: '  --background: #0f172a;',
+      })) as string;
+
+      expect(result).toContain('oldText not found');
+      expect(mockedFs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it('refuses when oldText matches multiple places', async () => {
+      mockedFs.readFile.mockResolvedValue(cssBefore);
+      const tools = agent.getToolsForSession(worktreePath);
+      const readFile = tools.find((t) => t.name === 'read_file')!;
+      const tool = tools.find((t) => t.name === 'edit_text_file')!;
+
+      await readFile.invoke({ filePath: 'app/globals.css' });
+      const result = (await tool.invoke({
+        filePath: 'app/globals.css',
+        oldText: ';',
+        newText: ' !important;',
+      })) as string;
+
+      expect(result).toContain('matches 2 places');
+      expect(mockedFs.writeFile).not.toHaveBeenCalled();
+    });
+
+    it('replace_symbol_body on an ignored path points at edit_text_file', async () => {
+      serenaMcp.replaceSymbolBody.mockResolvedValue(
+        mcpError(
+          "ValueError: Explicitly requested symbols in 'app/globals.css' while the path is ignored",
+        ),
+      );
+      const tools = agent.getToolsForSession(worktreePath);
+      const readFile = tools.find((t) => t.name === 'read_file')!;
+      const replaceTool = tools.find((t) => t.name === 'replace_symbol_body')!;
+
+      await readFile.invoke({ filePath: 'app/globals.css' });
+      const result = (await replaceTool.invoke({
+        filePath: 'app/globals.css',
+        symbolName: '.dark',
+        newBody: '.dark {}',
+      })) as string;
+
+      expect(result).toContain('edit_text_file');
+      expect(result).toContain('do NOT retry symbol tools');
+    });
+  });
+
   // ─── Symbol-not-found self-correction ────────────────────────────────
 
   describe('symbol-not-found self-correction', () => {
@@ -321,11 +439,11 @@ describe('PatchGeneratorAgent', () => {
       const replaceTool = tools.find((t) => t.name === 'replace_symbol_body')!;
 
       await readFile.invoke({ filePath: 'app/page.tsx' });
-      const result = await replaceTool.invoke({
+      const result = (await replaceTool.invoke({
         filePath: 'app/page.tsx',
         symbolName: 'Home',
         newBody: 'export default function HomePage() { return null; }',
-      });
+      })) as string;
 
       expect(result).toContain('No symbol matching');
       expect(result).toContain('HomePage');
@@ -347,10 +465,10 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const createTool = tools.find((t) => t.name === 'create_text_file')!;
 
-      const result = await createTool.invoke({
+      const result = (await createTool.invoke({
         filePath: 'src/existing.ts',
         content: 'export const x = 1;',
-      });
+      })) as string;
 
       expect(result).toContain('already exists');
       expect(result).toContain('replace_symbol_body');
@@ -363,10 +481,10 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const createTool = tools.find((t) => t.name === 'create_text_file')!;
 
-      const result = await createTool.invoke({
+      const result = (await createTool.invoke({
         filePath: 'src/new.ts',
         content: 'export const x = 1;',
-      });
+      })) as string;
 
       expect(result).toContain('OK');
       expect(serenaMcp.createTextFile).toHaveBeenCalledWith(
@@ -382,10 +500,10 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const createTool = tools.find((t) => t.name === 'create_text_file')!;
 
-      const result = await createTool.invoke({
+      const result = (await createTool.invoke({
         filePath: 'src/new.ts',
         content: 'export const x = 1;',
-      });
+      })) as string;
 
       expect(result).toContain('OK');
       expect(result).toContain('direct filesystem write');
@@ -408,7 +526,9 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const readFile = tools.find((t) => t.name === 'read_file')!;
 
-      const result = await readFile.invoke({ filePath: '../../etc/passwd' });
+      const result = (await readFile.invoke({
+        filePath: '../../etc/passwd',
+      })) as string;
 
       expect(result).toContain('Error');
       expect(serenaMcp.readFile).not.toHaveBeenCalled();
@@ -419,10 +539,10 @@ describe('PatchGeneratorAgent', () => {
       const tools = agent.getToolsForSession(worktreePath);
       const createTool = tools.find((t) => t.name === 'create_text_file')!;
 
-      const result = await createTool.invoke({
+      const result = (await createTool.invoke({
         filePath: '../../etc/passwd',
         content: 'malicious',
-      });
+      })) as string;
 
       expect(result).toContain('Error');
       expect(serenaMcp.createTextFile).not.toHaveBeenCalled();
@@ -466,8 +586,12 @@ describe('PatchGeneratorAgent', () => {
       await agent.invoke(stateWith());
 
       expect(serenaMcp.activateProject).toHaveBeenCalledWith(worktreePath);
-      expect(llmService.getModel).toHaveBeenCalledWith('patch_generator', undefined);
-      const mockModel = llmService.getModel.mock.results[0].value;
+      expect(llmService.getModel).toHaveBeenCalledWith(
+        'patch_generator',
+        undefined,
+      );
+      const mockModel = llmService.getModel.mock.results[0]
+        .value as MockModelLike;
       expect(mockModel.bindTools).toHaveBeenCalled();
     });
 
@@ -533,11 +657,13 @@ describe('PatchGeneratorAgent', () => {
         stateWith({ validationFeedback: 'TypeError in app.ts' }),
       );
 
-      const mockModel = llmService.getModel.mock.results[0].value;
-      const invokeArg = mockModel.invoke.mock.calls[0][0] as any[];
+      const mockModel = llmService.getModel.mock.results[0]
+        .value as MockModelLike;
+      const invokeCalls = mockModel.invoke.mock.calls as unknown[][];
+      const invokeArg = invokeCalls[0]?.[0] as MockInvokeMessage[];
       const userMsg = invokeArg.find((m) => m._getType?.() === 'human');
-      expect(userMsg.content).toContain('Previous Validation Feedback');
-      expect(userMsg.content).toContain('TypeError in app.ts');
+      expect(userMsg?.content).toContain('Previous Validation Feedback');
+      expect(userMsg?.content).toContain('TypeError in app.ts');
     });
   });
 
@@ -554,11 +680,11 @@ describe('PatchGeneratorAgent', () => {
       // After clearing, a new tool set should reject edits to src/app.ts
       const tools2 = agent.getToolsForSession(worktreePath);
       const replaceTool = tools2.find((t) => t.name === 'replace_symbol_body')!;
-      const result = await replaceTool.invoke({
+      const result = (await replaceTool.invoke({
         filePath: 'src/app.ts',
         symbolName: 'handleRequest',
         newBody: 'x',
-      });
+      })) as string;
       expect(result).toContain('must call read_file');
     });
 
@@ -580,11 +706,11 @@ describe('PatchGeneratorAgent', () => {
       // After the fresh attempt, edits to src/app.ts should be blocked again
       tools = agent.getToolsForSession(worktreePath);
       const replaceTool = tools.find((t) => t.name === 'replace_symbol_body')!;
-      const result = await replaceTool.invoke({
+      const result = (await replaceTool.invoke({
         filePath: 'src/app.ts',
         symbolName: 'handleRequest',
         newBody: 'x',
-      });
+      })) as string;
       expect(result).toContain('must call read_file');
     });
   });
